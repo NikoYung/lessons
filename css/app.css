@@ -431,3 +431,6 @@ body { transition: background-color .3s, color .3s; }
 
 .repeat-card { background: var(--card-2); display: flex; flex-direction: column; gap: 4px; }
 .repeat-card .btn.ghost { color: var(--bad); }
+
+.colors button.on { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--ink); }
+.colors .std { width: auto; padding: 0 12px; border-radius: 17px; color: #fff; font-size: 12px; font-weight: 600; }

@@ -223,7 +223,7 @@ export function extendSeries(series, todayIso) {
   const out = [];
   for (; d <= end; d = addDays(d, 1)) {
     if (!series.days.includes(weekday(d))) continue;
-    out.push({ id: uid(), studentId: series.studentId, date: d, start: series.start, duration: series.duration, status: 'planned', price: null, seriesId: series.id, note: series.note || '', ...(series.sheet ? { sheet: series.sheet } : {}) });
+    out.push({ id: uid(), studentId: series.studentId, date: d, start: series.start, duration: series.duration, status: 'planned', price: null, seriesId: series.id, note: series.note || '', ...(series.sheet ? { sheet: series.sheet } : {}), ...(series.color ? { color: series.color } : {}) });
   }
   const generatedUntil = series.generatedUntil && series.generatedUntil > end ? series.generatedUntil : end;
   return { lessons: out, series: { ...series, generatedUntil } };

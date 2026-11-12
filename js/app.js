@@ -10,7 +10,7 @@ import { interpret, findCommands, findSchedule, findTimetable, EXAMPLES, speechS
 import { recognize } from './ocr.js';
 import * as media from './media.js';
 
-const APP_VERSION = 'v14';
+const APP_VERSION = 'v15';
 const ZOOMS = [28, 36, 46, 60, 76, 96, 124];
 const BACKUP_REMIND_DAYS = 30;
 const DEFAULT_SHEETS = [
@@ -60,6 +60,8 @@ const visibleStudent = (stu) => shownIds().includes(sheetOf(stu));
 const defaultSheet = () => (allShown() ? sheets()[0].id : shownIds()[0]);
 /** Лист урока: свой, если задан, иначе — лист ученика. */
 const lessonSheetId = (l) => (sheetById(l.sheet) ? l.sheet : sheetOf(stById(l.studentId)));
+/** Цвет урока: свой, если задан, иначе — цвет ученика. */
+const lessonColor = (l) => l.color || stById(l.studentId)?.color || '#8e8e93';
 const visibleLesson = (l) => shownIds().includes(lessonSheetId(l));
 /** Включён ровно один лист — новые уроки идут на него. */
 const activeSheet = () => (sheets().length > 1 && shownIds().length === 1 ? shownIds()[0] : null);
@@ -195,7 +197,7 @@ function weekStrip() {
       <button class="wd ${cls}" data-act="goto" data-date="${iso}">
         <span class="wd-l">${WD_SHORT[i][0]}</span>
         <span class="wd-n">${fromISO(iso).getDate()}</span>
-        <span class="wd-dots">${ls.slice(0, 4).map((l) => `<i style="background:${stById(l.studentId)?.color || '#999'}"></i>`).join('')}</span>
+        <span class="wd-dots">${ls.slice(0, 4).map((l) => `<i style="background:${lessonColor(l)}"></i>`).join('')}</span>
       </button>`);
   }
   return `<div class="week" data-swipe="week">${cells.join('')}</div>`;
@@ -284,7 +286,7 @@ function timeline(days) {
       const sh = mixed ? sheetById(lessonSheetId(l)) : null;
       parts.push(`
       <button class="lb ${lessonBlockClass(st)} ${hpx < 40 ? 'tiny' : ''}" data-act="lesson-open" data-id="${l.id}"
-        style="--c:${stu?.color || '#8e8e93'};top:calc(${(s - h0 * 60) / 60} * var(--hp));height:max(22px, calc(${l.duration / 60} * var(--hp) - 2px));left:${colL((di + col / cols) / N)};width:calc((100% - 60px) / ${N * cols} - 2px)">
+        style="--c:${lessonColor(l)};top:calc(${(s - h0 * 60) / 60} * var(--hp));height:max(22px, calc(${l.duration / 60} * var(--hp) - 2px));left:${colL((di + col / cols) / N)};width:calc((100% - 60px) / ${N * cols} - 2px)">
         ${sh ? `<i class="lb-sh" style="background:${sh.color}" title="${esc(sh.name)}"></i>` : ''}
         <span class="lb-name">${esc(stu?.name || 'Без ученика')}</span>
         <span class="lb-time">${N > 3 ? l.start : `${l.start}–${endTime(l)}`}${tag && N < 7 ? ` · ${tag}` : ''}</span>
@@ -319,7 +321,7 @@ function monthGrid() {
     cells.push(`
       <button class="mc ${inMonth ? '' : 'out'} ${iso === S.date ? 'sel' : ''} ${iso === t ? 'today' : ''}" data-act="pick" data-date="${iso}">
         <span class="mc-n">${fromISO(iso).getDate()}</span>
-        <span class="mc-dots">${ls.slice(0, 3).map((l) => `<i style="background:${stById(l.studentId)?.color || '#999'}"></i>`).join('')}${ls.length > 3 ? '<b>+</b>' : ''}</span>
+        <span class="mc-dots">${ls.slice(0, 3).map((l) => `<i style="background:${lessonColor(l)}"></i>`).join('')}${ls.length > 3 ? '<b>+</b>' : ''}</span>
       </button>`);
   }
   return `
@@ -342,7 +344,7 @@ function agenda(iso) {
     return `
       <button class="ag ${lessonBlockClass(st)}" data-act="lesson-open" data-id="${l.id}">
         <span class="ag-time"><b>${l.start}</b><span>${endTime(l)}</span></span>
-        <i class="ag-bar" style="background:${stu?.color || '#999'}"></i>
+        <i class="ag-bar" style="background:${lessonColor(l)}"></i>
         <span class="ag-mid"><span class="ag-name">${esc(stu?.name || '—')}</span><span class="sub">${STATUS_LABEL[st]} · ${l.duration} мин</span></span>
         <span class="ag-price">${formatRub(lessonPrice(l, stu))}</span>
       </button>`;
@@ -670,6 +672,10 @@ function lessonSheet(sh) {
     ${head(sh.isNew ? 'Новый урок' : 'Урок')}
     <label class="field">Ученик<select class="input" data-field="studentId">${studentOptions(d.studentId)}</select></label>
     ${sheets().length > 1 ? `<div class="field">Лист<div class="seg">${sheets().map((x) => `<button class="${(d.sheet || lessonSheetId(d)) === x.id ? 'on' : ''}" data-act="lesson-sheet" data-id="${x.id}">${esc(x.name)}</button>`).join('')}</div></div>` : ''}
+    <div class="field">Цвет урока<div class="colors">
+      <button class="std ${d.color ? '' : 'on'}" style="background:${stu?.color || '#8e8e93'}" data-act="lesson-color" data-v="" aria-label="Как у ученика"><span>как у ученика</span></button>
+      ${COLORS.map((c) => `<button class="${d.color === c ? 'on' : ''}" style="background:${c}" data-act="lesson-color" data-v="${c}" aria-label="Цвет"></button>`).join('')}
+    </div></div>
     <div class="two">
       <label class="field">День<input class="input" type="date" value="${d.date}" data-field="date"></label>
       <label class="field">Начало<input class="input" type="time" value="${d.start}" step="300" data-field="start"></label>
@@ -705,21 +711,21 @@ function repeatBlock(sh, ser) {
     return `<label class="toggle"><input type="checkbox" data-field="repeat" ${sh.repeat ? 'checked' : ''}><span>Повторять каждую неделю (${WD_SHORT[weekday(d.date)].toLowerCase()} в ${d.start})</span></label>
       ${sh.repeat ? '<p class="note">Уроки появятся на 10 недель вперёд и будут добавляться дальше сами.</p>' : ''}`;
   }
-  const moved = orig && (orig.date !== d.date || orig.start !== d.start || orig.duration !== d.duration);
+  const moved = orig && lessonChanged(orig, d);
   return `
     <div class="card repeat-card">
       <p><b>Каждую неделю:</b> ${seriesText(ser)}</p>
-      ${moved ? `<div class="field mt">Перенос — для каких уроков?<div class="seg">
+      ${moved ? `<div class="field mt">Изменения — для каких уроков?<div class="seg">
         <button class="${sh.scope !== 'all' ? 'on' : ''}" data-act="lesson-scope" data-v="one">Только этот</button>
         <button class="${sh.scope === 'all' ? 'on' : ''}" data-act="lesson-scope" data-v="all">Этот и следующие</button></div></div>`
-    : '<p class="note">Чтобы перенести — поменяйте день или время выше: можно только этот урок или все следующие.</p>'}
+    : '<p class="note">Поменяйте день, время или цвет выше — можно только у этого урока или у всех следующих.</p>'}
       <button class="btn ghost mt" data-act="series-stop-from" data-id="${ser.id}">Не повторять после этого урока</button>
     </div>`;
 }
 
 /** Урок → расписание «каждую неделю» с его дня. Уроки, которые уже стоят в это время, не дублируем. */
 function weeklyOps(l) {
-  const series = { id: uid(), studentId: l.studentId, sheet: sheetById(l.sheet) ? l.sheet : lessonSheetId(l), days: [weekday(l.date)], start: l.start, duration: l.duration, from: l.date, until: null, generatedUntil: null, note: '' };
+  const series = { id: uid(), studentId: l.studentId, sheet: sheetById(l.sheet) ? l.sheet : lessonSheetId(l), color: l.color, days: [weekday(l.date)], start: l.start, duration: l.duration, from: l.date, until: null, generatedUntil: null, note: '' };
   const ext = extendSeries(series, today() > l.date ? today() : l.date);
   const same = S.lessons.filter((x) => x.studentId === l.studentId && x.start === l.start && x.id !== l.id && x.date > l.date && weekday(x.date) === weekday(l.date));
   const taken = new Set(same.map((x) => x.date));
@@ -733,24 +739,33 @@ function weeklyOps(l) {
   ];
 }
 
+const lessonChanged = (a, b) => a.date !== b.date || a.start !== b.start || a.duration !== b.duration || (a.color || '') !== (b.color || '');
+
 /** Перенос «этот и следующие»: сдвигаем все будущие уроки того же дня недели из этого расписания. */
 function moveFollowingOps(orig, d, ser) {
+  const n0 = now();
+  if (orig.date === d.date && orig.start === d.start && orig.duration === d.duration) {
+    // Поменяли только цвет — красим всё расписание дальше.
+    const following = S.lessons.filter((l) => l.seriesId === ser.id && l.id !== orig.id && l.date > orig.date && statusOf(l, n0) === 'planned');
+    const paint = (x) => { const y = { ...x }; if (d.color) y.color = d.color; else delete y.color; return y; };
+    return { ops: [{ put: ['series', paint(ser)] }, ...following.map((l) => ({ put: ['lessons', paint(l)] })), { put: ['lessons', d] }], count: following.length + 1 };
+  }
   const shift = daysBetween(orig.date, d.date);
   const oldWd = weekday(orig.date);
   const newWd = weekday(d.date);
   const ops = [];
   let targetId = ser.id;
   if (ser.days.length === 1) {
-    ops.push({ put: ['series', { ...ser, days: [newWd], start: d.start, duration: d.duration }] });
+    ops.push({ put: ['series', { ...ser, days: [newWd], start: d.start, duration: d.duration, color: d.color || undefined }] });
   } else {
     // В расписании несколько дней — этот день выделяем в отдельное расписание.
-    const part = { ...ser, id: uid(), days: [newWd], start: d.start, duration: d.duration, from: d.date };
+    const part = { ...ser, id: uid(), days: [newWd], start: d.start, duration: d.duration, from: d.date, color: d.color || undefined };
     targetId = part.id;
     ops.push({ put: ['series', { ...ser, days: ser.days.filter((x) => x !== oldWd) }] }, { put: ['series', part] });
   }
   const n = now();
   const following = S.lessons.filter((l) => l.seriesId === ser.id && l.id !== orig.id && l.date > orig.date && weekday(l.date) === oldWd && statusOf(l, n) === 'planned');
-  for (const l of following) ops.push({ put: ['lessons', { ...l, date: addDays(l.date, shift), start: d.start, duration: d.duration, seriesId: targetId }] });
+  for (const l of following) ops.push({ put: ['lessons', { ...l, date: addDays(l.date, shift), start: d.start, duration: d.duration, seriesId: targetId, color: d.color || undefined }] });
   ops.push({ put: ['lessons', { ...d, seriesId: targetId }] });
   return { ops, count: following.length + 1 };
 }
@@ -768,7 +783,7 @@ async function saveLesson() {
   delete d.sheetAuto;
   if (!d.studentId || !d.date || !d.start) return toast('Заполните ученика, день и время');
   if (sh.isNew && sh.repeat) {
-    const series = { id: uid(), studentId: d.studentId, sheet: d.sheet, days: [weekday(d.date)], start: d.start, duration: d.duration, from: d.date, until: null, generatedUntil: null };
+    const series = { id: uid(), studentId: d.studentId, sheet: d.sheet, color: d.color, days: [weekday(d.date)], start: d.start, duration: d.duration, from: d.date, until: null, generatedUntil: null };
     const ext = extendSeries(series, today() > d.date ? today() : d.date);
     const ops = [{ put: ['series', ext.series] }, ...ext.lessons.map((l) => ({ put: ['lessons', { ...l, price: d.price, note: l.date === d.date ? d.note : '' }] }))];
     closeSheet();
@@ -785,9 +800,9 @@ async function saveLesson() {
     await commit(ops, `Каждый ${WD_FULL[weekday(d.date)]} в ${d.start}`);
     return;
   }
-  if (!sh.isNew && ser && orig && sh.scope === 'all' && (orig.date !== d.date || orig.start !== d.start || orig.duration !== d.duration)) {
+  if (!sh.isNew && ser && orig && sh.scope === 'all' && lessonChanged(orig, d)) {
     const { ops, count } = moveFollowingOps(orig, d, ser);
-    await commit(ops, `Перенесено: ${lessonsWord(count)}`);
+    await commit(ops, `Изменено: ${lessonsWord(count)}`);
     return;
   }
   await commit([{ put: ['lessons', d] }], sh.isNew ? 'Урок добавлен' : 'Сохранено');
@@ -1493,6 +1508,12 @@ const ACTIONS = {
   },
   'series-save': () => saveSeries(),
   'series-stop': (b) => stopSeries(b.dataset.id),
+  'lesson-color': (b) => {
+    const d = S.sheet.draft;
+    if (b.dataset.v) d.color = b.dataset.v;
+    else delete d.color;
+    renderSheet();
+  },
   'lesson-scope': (b) => { S.sheet.scope = b.dataset.v; renderSheet(); },
   'series-stop-from': async (b) => {
     const ser = S.series.find((x) => x.id === b.dataset.id);
