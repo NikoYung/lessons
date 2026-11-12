@@ -4,13 +4,13 @@ import {
   monthTitle, dayTitle, relDay, formatRub, parseRub, plural, lessonsWord, WD_SHORT, WD_FULL, MONTHS_GEN,
   priceAt, lessonPrice, withPrice, statusOf, isCharged, STATUS_LABEL, sortLessons, conflicts, endTime,
   studentStats, balanceText, monthStats, totalDebt, extendSeries, seriesText, COLORS, nextColor, validateBackup,
-  lessonStart, isBusy,
+  lessonStart, isBusy, daysBetween,
 } from './logic.js';
 import { interpret, findCommands, findSchedule, findTimetable, EXAMPLES, speechSupported, listen } from './voice.js';
 import { recognize } from './ocr.js';
 import * as media from './media.js';
 
-const APP_VERSION = 'v13';
+const APP_VERSION = 'v14';
 const ZOOMS = [28, 36, 46, 60, 76, 96, 124];
 const BACKUP_REMIND_DAYS = 30;
 const DEFAULT_SHEETS = [
@@ -509,7 +509,11 @@ function moreView() {
       ${(() => {
     const n = lessonsToWipe().length;
     const name = allShown() ? '' : ` (${shownIds().map((id) => sheetById(id).name).join(', ')})`;
-    return `<p class="muted small">${n ? `В календаре ${lessonsWord(n)}${name}. Ученики, оплаты и файлы останутся.` : 'Уроков нет.'}</p>
+    const one = weekOneOffs().length;
+    const wk = startOfWeek(S.date);
+    return `${one ? `<p class="muted small">Разовых уроков на неделе ${fromISO(wk).getDate()}–${fromISO(addDays(wk, 6)).getDate()} ${MONTHS_GEN[fromISO(addDays(wk, 6)).getMonth()]}: ${one}. Можно сделать их еженедельными одной кнопкой.</p>
+      <button class="btn primary mt" data-act="week-weekly">Повторять каждую неделю (${one})</button>` : ''}
+    <p class="muted small mt">${n ? `В календаре ${lessonsWord(n)}${name}. Ученики, оплаты и файлы останутся.` : 'Уроков нет.'}</p>
       ${n ? `<button class="btn danger mt" data-act="lessons-wipe">Удалить все уроки${esc(name)}</button>` : ''}`;
   })()}
     </section>
@@ -683,7 +687,7 @@ function lessonSheet(sh) {
         <span class="note">${st === 'missed' ? 'Пропуск без предупреждения — оплачивается' : st === 'cancelled' ? 'Отменённый урок не оплачивается' : st === 'done' ? 'Прошедшие уроки считаются проведёнными сами' : ''}</span>
       </div>`}
     <label class="field">Заметка<input class="input" value="${esc(d.note)}" data-field="note" placeholder="Тема, домашнее задание…"></label>
-    ${ser ? `<p class="note">Из расписания: ${seriesText(ser)}. Изменения касаются только этого урока.</p>` : ''}
+    ${sh.isNew ? '' : repeatBlock(sh, ser)}
     <button class="btn primary" data-act="lesson-save" ${d.studentId ? '' : 'disabled'}>${sh.isNew ? 'Добавить' : 'Сохранить'}</button>
     ${sh.isNew ? '' : `
       ${mediaBlock({ lessonId: d.id, studentId: d.studentId })}
@@ -691,6 +695,64 @@ function lessonSheet(sh) {
         <button class="btn" data-act="student-open" data-id="${d.studentId}" data-push="1">Ученик</button>
         <button class="btn danger" data-act="lesson-del">Удалить</button>
       </div>`}`;
+}
+
+/** Повтор урока: сделать еженедельным, перенести только этот или все следующие, перестать повторять. */
+function repeatBlock(sh, ser) {
+  const d = sh.draft;
+  const orig = S.lessons.find((l) => l.id === d.id);
+  if (!ser) {
+    return `<label class="toggle"><input type="checkbox" data-field="repeat" ${sh.repeat ? 'checked' : ''}><span>Повторять каждую неделю (${WD_SHORT[weekday(d.date)].toLowerCase()} в ${d.start})</span></label>
+      ${sh.repeat ? '<p class="note">Уроки появятся на 10 недель вперёд и будут добавляться дальше сами.</p>' : ''}`;
+  }
+  const moved = orig && (orig.date !== d.date || orig.start !== d.start || orig.duration !== d.duration);
+  return `
+    <div class="card repeat-card">
+      <p><b>Каждую неделю:</b> ${seriesText(ser)}</p>
+      ${moved ? `<div class="field mt">Перенос — для каких уроков?<div class="seg">
+        <button class="${sh.scope !== 'all' ? 'on' : ''}" data-act="lesson-scope" data-v="one">Только этот</button>
+        <button class="${sh.scope === 'all' ? 'on' : ''}" data-act="lesson-scope" data-v="all">Этот и следующие</button></div></div>`
+    : '<p class="note">Чтобы перенести — поменяйте день или время выше: можно только этот урок или все следующие.</p>'}
+      <button class="btn ghost mt" data-act="series-stop-from" data-id="${ser.id}">Не повторять после этого урока</button>
+    </div>`;
+}
+
+/** Урок → расписание «каждую неделю» с его дня. Уроки, которые уже стоят в это время, не дублируем. */
+function weeklyOps(l) {
+  const series = { id: uid(), studentId: l.studentId, sheet: sheetById(l.sheet) ? l.sheet : lessonSheetId(l), days: [weekday(l.date)], start: l.start, duration: l.duration, from: l.date, until: null, generatedUntil: null, note: '' };
+  const ext = extendSeries(series, today() > l.date ? today() : l.date);
+  const same = S.lessons.filter((x) => x.studentId === l.studentId && x.start === l.start && x.id !== l.id && x.date > l.date && weekday(x.date) === weekday(l.date));
+  const taken = new Set(same.map((x) => x.date));
+  const fresh = ext.lessons.filter((x) => x.date !== l.date && !taken.has(x.date)).map((x) => ({ ...x, price: l.price ?? null }));
+  return [
+    { put: ['series', ext.series] },
+    { put: ['lessons', { ...l, seriesId: series.id }] },
+    ...fresh.map((x) => ({ put: ['lessons', x] })),
+    // такие же разовые уроки дальше — привязываем к расписанию
+    ...same.filter((x) => !x.seriesId).map((x) => ({ put: ['lessons', { ...x, seriesId: series.id }] })),
+  ];
+}
+
+/** Перенос «этот и следующие»: сдвигаем все будущие уроки того же дня недели из этого расписания. */
+function moveFollowingOps(orig, d, ser) {
+  const shift = daysBetween(orig.date, d.date);
+  const oldWd = weekday(orig.date);
+  const newWd = weekday(d.date);
+  const ops = [];
+  let targetId = ser.id;
+  if (ser.days.length === 1) {
+    ops.push({ put: ['series', { ...ser, days: [newWd], start: d.start, duration: d.duration }] });
+  } else {
+    // В расписании несколько дней — этот день выделяем в отдельное расписание.
+    const part = { ...ser, id: uid(), days: [newWd], start: d.start, duration: d.duration, from: d.date };
+    targetId = part.id;
+    ops.push({ put: ['series', { ...ser, days: ser.days.filter((x) => x !== oldWd) }] }, { put: ['series', part] });
+  }
+  const n = now();
+  const following = S.lessons.filter((l) => l.seriesId === ser.id && l.id !== orig.id && l.date > orig.date && weekday(l.date) === oldWd && statusOf(l, n) === 'planned');
+  for (const l of following) ops.push({ put: ['lessons', { ...l, date: addDays(l.date, shift), start: d.start, duration: d.duration, seriesId: targetId }] });
+  ops.push({ put: ['lessons', { ...d, seriesId: targetId }] });
+  return { ops, count: following.length + 1 };
 }
 
 function newLessonDraft(date, start, studentId = '') {
@@ -714,8 +776,20 @@ async function saveLesson() {
     await commit(ops, `Каждый ${WD_FULL[weekday(d.date)]} — ${lessonsWord(ext.lessons.length)}`);
     return;
   }
+  const orig = S.lessons.find((l) => l.id === d.id);
+  const ser = d.seriesId && S.series.find((x) => x.id === d.seriesId);
   closeSheet();
   go(d.date);
+  if (!sh.isNew && !d.seriesId && sh.repeat) {
+    const ops = weeklyOps(d);
+    await commit(ops, `Каждый ${WD_FULL[weekday(d.date)]} в ${d.start}`);
+    return;
+  }
+  if (!sh.isNew && ser && orig && sh.scope === 'all' && (orig.date !== d.date || orig.start !== d.start || orig.duration !== d.duration)) {
+    const { ops, count } = moveFollowingOps(orig, d, ser);
+    await commit(ops, `Перенесено: ${lessonsWord(count)}`);
+    return;
+  }
   await commit([{ put: ['lessons', d] }], sh.isNew ? 'Урок добавлен' : 'Сохранено');
 }
 
@@ -996,6 +1070,8 @@ function batchView(sh) {
       <p class="note">Каждый класс — отдельная строка на листе «${esc(sheetById(tt.sheet)?.name || '')}», уроки повторяются каждую неделю. В деньгах не считаются.${S.students.some((s) => /^школа$/i.test(s.name)) ? ' Общий блок «Школа» можно убрать в его карточке, если он больше не нужен.' : ''}</p>`
     : `<h3 class="section-title mt">Нашёл: ${[fresh ? `новое — ${fresh}` : '', known ? `уже есть — ${known}` : ''].filter(Boolean).join(', ') || 'только ответы'}</h3>`}
     ${dates}
+    ${!tt && acts.some((b) => b.result.ops?.some((o) => o.put?.[0] === 'lessons' && !S.lessons.some((l) => l.id === o.put[1].id))) ? `
+      <label class="toggle"><input type="checkbox" data-act="batch-weekly" ${sh.weekly !== false ? 'checked' : ''}><span>Повторять новые уроки каждую неделю</span></label>` : ''}
     ${acts.length > 1 ? `<button class="btn" data-act="batch-all">${allOn ? 'Снять все' : `Выбрать все (${acts.length})`}</button>` : ''}
     ${sh.batch.map((b, i) => ({ b, i })).map(({ b, i }) => (b.result.kind === 'answer'
     ? `<section class="card vres"><p class="sub">«${esc(b.text)}»</p><p class="answer">${esc(b.result.text)}</p></section>`
@@ -1010,7 +1086,13 @@ async function applyBatch() {
   const picked = sh.batch.filter((b) => b.on && b.result.kind === 'action');
   if (!picked.length) return;
   // Если две команды меняют один урок — в итоге остаётся последняя.
-  const ops = picked.flatMap((b) => b.result.ops);
+  let ops = picked.flatMap((b) => b.result.ops);
+  // Новые разовые уроки со скриншота — сразу еженедельные (если галочка стоит).
+  if (!sh.timetable && sh.weekly !== false) {
+    ops = ops.flatMap((o) => (o.put?.[0] === 'lessons' && !o.put[1].seriesId && !S.lessons.some((l) => l.id === o.put[1].id) && !sh.result
+      ? weeklyOps({ ...o.put[1], sheet: o.put[1].sheet || activeSheet() || undefined })
+      : [o]));
+  }
   const nav = picked.find((b) => b.result.nav?.date)?.result.nav;
   const tt = sh.timetable;
   closeSheet();
@@ -1411,6 +1493,23 @@ const ACTIONS = {
   },
   'series-save': () => saveSeries(),
   'series-stop': (b) => stopSeries(b.dataset.id),
+  'lesson-scope': (b) => { S.sheet.scope = b.dataset.v; renderSheet(); },
+  'series-stop-from': async (b) => {
+    const ser = S.series.find((x) => x.id === b.dataset.id);
+    const d = S.sheet.draft;
+    const n = now();
+    const after = S.lessons.filter((l) => l.seriesId === ser.id && l.date > d.date && statusOf(l, n) === 'planned');
+    if (!confirm(`Больше не повторять «${seriesText(ser)}»? Уберу ${lessonsWord(after.length)} после ${dayTitle(d.date)}.`)) return;
+    closeSheet();
+    await commit([{ put: ['series', { ...ser, until: d.date }] }, ...after.map((l) => ({ del: ['lessons', l.id] }))], 'Больше не повторяется');
+  },
+  'week-weekly': async () => {
+    const ls = weekOneOffs();
+    if (!ls.length) return;
+    if (!confirm(`Сделать ${lessonsWord(ls.length)} этой недели еженедельными? Они будут повторяться в тот же день и время на 10 недель вперёд и дальше.`)) return;
+    await commit(ls.flatMap(weeklyOps), `Каждую неделю: ${lessonsWord(ls.length)}`);
+  },
+  'batch-weekly': () => { S.sheet.weekly = S.sheet.weekly === false; renderSheet(); },
   export: () => exportBackup().catch((e) => alert(e.message)),
   voice: () => {
     openSheet({ type: 'voice', text: '', result: null, listening: false });
@@ -1463,6 +1562,13 @@ const ACTIONS = {
     else if (r.nav.student) openSheet({ type: 'student', id: r.nav.student, full: true });
   },
 };
+
+/** Разовые (не повторяющиеся) уроки недели, которая сейчас открыта. */
+function weekOneOffs() {
+  const from = startOfWeek(S.date);
+  const to = addDays(from, 6);
+  return S.lessons.filter((l) => !l.seriesId && l.date >= from && l.date <= to && l.status !== 'cancelled' && visibleLesson(l));
+}
 
 /** Уроки показанных листов (если включены все — вообще все). */
 const lessonsToWipe = () => S.lessons.filter(visibleLesson);
