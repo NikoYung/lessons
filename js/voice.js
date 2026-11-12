@@ -346,7 +346,7 @@ const RX = {
   price: /\s(цен\S*|стоимост\S*|стоит|стоят|тариф\S*)\s/,
   move: /\s(перенес\S*|перенос\S*|передвин\S*|сдвин\S*|подвин\S*|перестав\S*|поменя\S*|измени\S*)\s/,
   remove: /\s(удали\S*|убери|убрать|сотри)\s/,
-  cancel: /\s(отмен\S*|не будет|не придет|не сможет|заболел\S*|болеет)\s/,
+  cancel: /\s(отмен\S*|не будет|не будем|не прид\S*|не смож\S*|не получится|заболе\S*|боле(ет|ем|ю))\s/,
   missed: /\s(пропуст\S*|прогул\S*|не пришл\S*|не пришел|не явил\S*|не было)\s/,
   done: /\s(провел\S*|проведен\S*|прошел|прошло|состоял\S*)\s/,
   when: /\s(когда)\s/,
@@ -719,6 +719,72 @@ function makeSeries(norm, ctx, today, r, { title }) {
     ],
     warn: warn.slice(0, 3), ops, newStudent: r.isNew ? r.student : null, nav: lessons[0] ? { date: lessons[0].date } : null,
   };
+}
+
+/* ---------- Текст с картинки → команды ---------- */
+
+/** Чистим распознанный скриншот переписки: строка статуса, время отправки, галочки. */
+export function cleanOcrText(text) {
+  return String(text || '')
+    .split(/\r?\n/)
+    .map((l) => l
+      .replace(/\s*[✓✔√]+\s*$/u, '')
+      // время отправки в конце пузыря: «Спасибо 10:05», «…на 18:00? 19:31». Время после «в/на/к/до…» — часть фразы, его оставляем.
+      .replace(/(^|\s)(?<!(?:^|\s)(?:в|во|на|к|ко|до|с|со|около|после|часов)\s)\d{1,2}:\d{2}\s*[/\\vV✓✔√]{0,3}\s*$/iu, '')
+      .trim())
+    // строка статуса телефона и пустые обрывки: в них нет слов из 3+ русских букв
+    .filter((l) => l && /[а-яё]{3,}/i.test(l) && !/^\d{1,2}:\d{2}\s.{0,20}$/.test(l) || /[а-яё]{3,}.*[а-яё]{3,}/i.test(l))
+    .join('\n');
+}
+
+/** Делим на фразы: по концу предложения и по пустым строкам; короткие обрывки строк склеиваем. */
+function chunks(text) {
+  return text
+    .replace(/\n{2,}/g, ' ¶ ')
+    .replace(/([^.!?¶ ])\n/g, '$1 ')
+    .split(/(?<=[.!?])\s+|\s*¶\s*|\n/)
+    .map((s) => s.trim())
+    .filter((s) => s.length >= 4);
+}
+
+/**
+ * Ищет в тексте команды. Если во фразе нет имени, берём имя из предыдущих фраз.
+ * Результат: [{text, result}] только с понятыми действиями/ответами, без повторов.
+ */
+export function findCommands(text, ctx) {
+  const clean = cleanOcrText(text);
+  const out = [];
+  const seen = new Set();
+  let lastName = null;
+  const push = (t, r) => {
+    const key = r.kind === 'action' ? JSON.stringify(r.ops.map((o) => (o.put ? [o.put[0], o.put[1].id, o.put[1].date, o.put[1].start, o.put[1].status, o.put[1].amount] : o.del))) : r.text;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ text: t, result: r });
+  };
+  const list = chunks(clean);
+  const today = toISO(ctx.now);
+  for (let i = 0; i < list.length; i++) {
+    let c = list[i];
+    const norm = normalize(c);
+    const found = findStudents(norm, ctx.students);
+    // «Маша заболела. В понедельник не придём» — день во второй фразе: склеиваем.
+    const next = list[i + 1];
+    if (next && detectIntent(norm) && !parseDates(norm, today).dates.length && !parseTimes(norm).times.length
+      && !findStudents(normalize(next), ctx.students).length
+      && (parseDates(normalize(next), today).dates.length || parseTimes(normalize(next)).times.length)) {
+      c = `${c} ${next}`;
+      i++;
+    }
+    let phrase = c;
+    if (found.length) lastName = found[0].student.name;
+    else if (lastName) phrase = `${lastName} ${c}`;
+    if (!detectIntent(normalize(phrase))) continue;
+    const r = interpret(phrase, ctx);
+    if (r.kind === 'error' || (r.kind === 'action' && r.newStudent && !found.length)) continue;
+    push(c, r);
+  }
+  return { clean, items: out };
 }
 
 export const EXAMPLES = [

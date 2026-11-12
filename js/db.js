@@ -1,6 +1,7 @@
 // Хранилище в IndexedDB. Данные живут только на устройстве.
 const DB_NAME = 'lessons';
 export const STORES = ['students', 'lessons', 'payments', 'series'];
+export const ALL = [...STORES, 'media']; // media — фото и файлы (Blob)
 let db;
 
 const req = (r) => new Promise((ok, fail) => {
@@ -15,10 +16,11 @@ const done = (tx) => new Promise((ok, fail) => {
 });
 
 export async function openDB() {
-  const open = indexedDB.open(DB_NAME, 1);
+  const open = indexedDB.open(DB_NAME, 2);
   open.onupgradeneeded = () => {
-    for (const s of STORES) open.result.createObjectStore(s, { keyPath: 'id' });
-    open.result.createObjectStore('meta');
+    const d = open.result;
+    for (const s of ALL) if (!d.objectStoreNames.contains(s)) d.createObjectStore(s, { keyPath: 'id' });
+    if (!d.objectStoreNames.contains('meta')) d.createObjectStore('meta');
   };
   db = await req(open);
   // Просим не удалять данные при нехватке места (Safari иначе может очистить через 7 дней без запуска).
@@ -48,10 +50,10 @@ export async function apply(ops) {
 
 /** Полная замена данных (восстановление копии): при сбое старые данные останутся. */
 export async function replaceAll(data) {
-  const tx = db.transaction([...STORES, 'meta'], 'readwrite');
-  for (const s of STORES) {
+  const tx = db.transaction([...ALL, 'meta'], 'readwrite');
+  for (const s of ALL) {
     tx.objectStore(s).clear();
-    for (const item of data[s]) tx.objectStore(s).put(item);
+    for (const item of data[s] || []) tx.objectStore(s).put(item);
   }
   if (data.settings) tx.objectStore('meta').put(data.settings, 'settings');
   await done(tx);

@@ -6,7 +6,9 @@ import {
   studentStats, balanceText, monthStats, totalDebt, extendSeries, seriesText, COLORS, nextColor, validateBackup,
   lessonStart, isBusy,
 } from './logic.js';
-import { interpret, EXAMPLES, speechSupported, listen } from './voice.js';
+import { interpret, findCommands, EXAMPLES, speechSupported, listen } from './voice.js';
+import { recognize } from './ocr.js';
+import * as media from './media.js';
 
 const HOUR_PX = 60;
 const BACKUP_REMIND_DAYS = 30;
@@ -21,6 +23,7 @@ const S = {
   lessons: [],
   payments: [],
   series: [],
+  media: [],
   settings: { ...DEFAULT_SETTINGS },
   lastBackup: null,
   query: '',
@@ -54,7 +57,7 @@ function toast(msg, undo = null) {
 
 /* ---------- Изменение данных ---------- */
 
-const ARR = { students: () => S.students, lessons: () => S.lessons, payments: () => S.payments, series: () => S.series };
+const ARR = { students: () => S.students, lessons: () => S.lessons, payments: () => S.payments, series: () => S.series, media: () => S.media };
 
 function applyLocal(ops) {
   for (const o of ops) {
@@ -455,7 +458,7 @@ function closeSheet() {
 function renderSheet() {
   const root = $('#sheet-root');
   if (!S.sheet) { root.innerHTML = ''; document.body.classList.remove('locked'); return; }
-  const fn = { lesson: lessonSheet, student: studentSheet, studentEdit: studentEditSheet, payment: paymentSheet, series: seriesSheet, voice: voiceSheet }[S.sheet.type];
+  const fn = { lesson: lessonSheet, student: studentSheet, studentEdit: studentEditSheet, payment: paymentSheet, series: seriesSheet, voice: voiceSheet, media: mediaSheet }[S.sheet.type];
   const prevScroll = $('.sheet', root)?.scrollTop || 0;
   const same = root.dataset.type === S.sheet.type;
   root.dataset.type = S.sheet.type;
@@ -507,6 +510,7 @@ function lessonSheet(sh) {
     ${ser ? `<p class="note">Из расписания: ${seriesText(ser)}. Изменения касаются только этого урока.</p>` : ''}
     <button class="btn primary" data-act="lesson-save" ${d.studentId ? '' : 'disabled'}>${sh.isNew ? 'Добавить' : 'Сохранить'}</button>
     ${sh.isNew ? '' : `
+      ${mediaBlock({ lessonId: d.id, studentId: d.studentId })}
       <div class="row-btns">
         <button class="btn" data-act="student-open" data-id="${d.studentId}" data-push="1">Ученик</button>
         <button class="btn danger" data-act="lesson-del">Удалить</button>
@@ -599,6 +603,7 @@ function studentSheet(sh) {
         })())).join('') : '<div class="muted small">Пока пусто</div>'}
       ${!sh.all && history.length > 15 ? `<button class="btn ghost" data-act="history-all">Показать всё (${history.length})</button>` : ''}
     </section>
+    ${mediaBlock({ studentId: s.id })}
     ${s.note ? `<section class="card"><h3 class="section-title">Заметки</h3><p class="pre">${esc(s.note)}</p></section>` : ''}`;
 }
 
@@ -760,8 +765,10 @@ function voiceSheet(sh) {
       <textarea class="input area" rows="2" placeholder="Например: перенеси Машу с четверга на пятницу в 17" data-vtext>${esc(sh.text)}</textarea>
       <button class="btn primary" data-act="voice-run">Разобрать</button>
     </div>
+    ${sh.ocr ? ocrProgress(sh.ocr) : `<label class="btn">📷 Из скриншота или фото<input type="file" accept="image/*" multiple data-change="ocr-voice"></label>`}
+    ${batchView(sh)}
     ${res}
-    ${r ? '' : `<div class="field">Примеры — можно нажать<div class="ex-chips">${EXAMPLES.slice(0, 8).map((e) => `<button class="ex" data-act="voice-ex" data-t="${esc(e)}">${esc(e)}</button>`).join('')}</div></div>`}`;
+    ${r || sh.batch || sh.ocr ? '' : `<div class="field">Примеры — можно нажать<div class="ex-chips">${EXAMPLES.slice(0, 8).map((e) => `<button class="ex" data-act="voice-ex" data-t="${esc(e)}">${esc(e)}</button>`).join('')}</div></div>`}`;
 }
 
 function voiceCtx() {
@@ -772,8 +779,154 @@ function runVoice(text) {
   const sh = S.sheet;
   if (!sh || sh.type !== 'voice') return;
   sh.text = text;
-  sh.result = text.trim() ? interpret(text, voiceCtx()) : null;
+  sh.batch = null;
+  sh.result = null;
+  // Длинный текст (переписка, скриншот) — ищем в нём несколько команд.
+  if (/\n/.test(text.trim()) || text.length > 140) {
+    const { items } = findCommands(text, voiceCtx());
+    sh.batch = items.map((x) => ({ ...x, on: x.result.kind === 'action' }));
+  } else if (text.trim()) sh.result = interpret(text, voiceCtx());
   renderSheet();
+}
+
+function ocrProgress(o) {
+  return `<div class="card"><p class="small">${esc(o.label)}</p><div class="progress mt"><i style="width:${Math.round(o.p * 100)}%"></i></div>
+    ${o.first ? '<p class="note">Первый раз загружается модуль распознавания (~10 МБ), дальше работает без интернета.</p>' : ''}</div>`;
+}
+
+function batchView(sh) {
+  if (!sh.batch) return '';
+  if (!sh.batch.length) return '<section class="card vres err"><p>Команд в тексте не нашёл. Текст — в поле выше: можно поправить и нажать «Разобрать».</p></section>';
+  const n = sh.batch.filter((b) => b.on && b.result.kind === 'action').length;
+  return `
+    <h3 class="section-title mt">Нашёл в тексте</h3>
+    ${sh.batch.map((b, i) => (b.result.kind === 'answer'
+    ? `<section class="card vres"><p class="sub">«${esc(b.text)}»</p><p class="answer">${esc(b.result.text)}</p></section>`
+    : `<label class="card vres pick ${b.on ? '' : 'off'}"><input type="checkbox" data-bi="${i}" ${b.on ? 'checked' : ''}>
+        <span><p class="sub">«${esc(b.text)}»</p><h3>${esc(b.result.title)}</h3>${b.result.lines.map((l) => `<p>${esc(l)}</p>`).join('')}
+        ${b.result.warn?.length ? `<div class="warn-box mt">${b.result.warn.map(esc).join('<br>')}</div>` : ''}</span></label>`)).join('')}
+    ${n ? `<button class="btn primary" data-act="batch-apply">Применить (${n})</button>` : ''}`;
+}
+
+async function applyBatch() {
+  const sh = S.sheet;
+  const picked = sh.batch.filter((b) => b.on && b.result.kind === 'action');
+  if (!picked.length) return;
+  // Если две команды меняют один урок — в итоге остаётся последняя.
+  const ops = picked.flatMap((b) => b.result.ops);
+  const nav = picked.find((b) => b.result.nav?.date)?.result.nav;
+  closeSheet();
+  if (nav) { S.tab = 'cal'; go(nav.date); }
+  await commit(ops, picked.length === 1 ? picked[0].result.title : `Применено: ${picked.length}`);
+}
+
+/** Распознать текст на картинках; onState получает {label, p 0..1, first}. */
+let ocrUsed = false;
+async function ocrText(files, onState) {
+  const parts = [];
+  for (let i = 0; i < files.length; i++) {
+    const label = files.length > 1 ? `Распознаю текст: картинка ${i + 1} из ${files.length}` : 'Распознаю текст…';
+    onState({ label, p: 0, first: !ocrUsed });
+    const { text } = await recognize(files[i], (p) => onState({ label, p, first: false }, true));
+    ocrUsed = true;
+    parts.push(text.trim());
+  }
+  return parts.join('\n\n');
+}
+
+function ocrState(sh) {
+  return (o, quick) => {
+    sh.ocr = o;
+    const bar = $('.sheet .progress i');
+    if (quick && bar) bar.style.width = `${Math.round(o.p * 100)}%`;
+    else if (S.sheet === sh) renderSheet();
+  };
+}
+
+async function ocrToVoice(files) {
+  const sh = S.sheet;
+  sh.result = null;
+  sh.batch = null;
+  try {
+    const text = await ocrText(files, ocrState(sh));
+    sh.ocr = null;
+    if (S.sheet !== sh) return;
+    if (!text.trim()) { sh.batch = []; renderSheet(); return; }
+    runVoice(text);
+  } catch (e) {
+    sh.ocr = null;
+    renderSheet();
+    alert(`Не получилось распознать: ${e.message}`);
+  }
+}
+
+/* ---------- Фото и файлы ---------- */
+
+function mediaBlock({ studentId, lessonId = null }) {
+  const items = S.media.filter((m) => (lessonId ? m.lessonId === lessonId : m.studentId === studentId)).sort((a, b) => b.createdAt - a.createdAt);
+  return `
+    <section class="card">
+      <h3 class="section-title">Фото и файлы${items.length ? ` · ${items.length}` : ''}</h3>
+      ${items.length ? `<div class="media-grid">${items.map((m) => `
+        <button class="mthumb" data-act="media-open" data-id="${m.id}" aria-label="${esc(m.name)}">
+          ${media.isImage(m) ? `<img src="${media.urlOf(m)}" alt="" loading="lazy">` : `<span class="mi">${media.kindIcon(m)}</span><span class="mn">${esc(m.name)}</span>`}
+          ${m.text ? '<b class="mt-badge">Аа</b>' : ''}
+        </button>`).join('')}</div>` : '<p class="muted small">Домашка, фото тетради, PDF — хранятся на телефоне. С картинок можно распознать текст.</p>'}
+      <label class="btn mt">+ Добавить<input type="file" multiple data-change="media-add" data-student="${studentId || ''}" data-lesson="${lessonId || ''}"></label>
+    </section>`;
+}
+
+function mediaSheet(sh) {
+  const m = S.media.find((x) => x.id === sh.id);
+  if (!m) return `${head('Файл')}<div class="empty">Файл удалён</div>`;
+  const stu = stById(m.studentId);
+  const les = m.lessonId ? S.lessons.find((l) => l.id === m.lessonId) : null;
+  const url = media.urlOf(m);
+  const view = media.isImage(m) ? `<img class="mview" src="${url}" alt="${esc(m.name)}">`
+    : /^video\//.test(m.type) ? `<video class="mview" src="${url}" controls playsinline></video>`
+      : /^audio\//.test(m.type) ? `<audio src="${url}" controls></audio>`
+        : `<a class="btn" href="${url}" target="_blank" rel="noopener">Открыть ${esc(m.name)}</a>`;
+  return `
+    ${head(esc(m.name))}
+    ${view}
+    <p class="note">${media.sizeText(m.size)} · ${new Date(m.createdAt).toLocaleDateString('ru-RU')}${stu ? ` · ${esc(stu.name)}` : ''}${les ? `, урок ${dayTitle(les.date)} ${les.start}` : ''}</p>
+    ${sh.ocr ? ocrProgress(sh.ocr) : ''}
+    ${media.isImage(m) && !m.text && !sh.ocr ? '<button class="btn primary" data-act="media-ocr">Распознать текст</button>' : ''}
+    ${m.text ? `
+      <label class="field">Текст с картинки (можно поправить)<textarea class="input area tall" data-mtext>${esc(m.text)}</textarea></label>
+      <div class="row-btns">
+        <button class="btn primary" data-act="media-cmd">Найти команды</button>
+        <button class="btn" data-act="media-copy">Копировать</button>
+      </div>
+      <button class="btn" data-act="media-note">Добавить в заметку ${les ? 'урока' : 'ученика'}</button>` : ''}
+    <div class="row-btns">
+      <button class="btn" data-act="media-share">Поделиться</button>
+      <button class="btn danger" data-act="media-del">Удалить</button>
+    </div>`;
+}
+
+async function addMedia(files, studentId, lessonId) {
+  const items = [];
+  for (const f of files) {
+    if (f.size > 200e6) { toast(`${f.name}: больше 200 МБ, пропускаю`); continue; }
+    items.push(await media.fromFile(f, { studentId: studentId || null, lessonId: lessonId || null }));
+  }
+  if (!items.length) return;
+  await commit(items.map((m) => ({ put: ['media', m] })), items.length === 1 ? 'Файл добавлен' : `Добавлено файлов: ${items.length}`);
+}
+
+async function ocrMedia() {
+  const sh = S.sheet;
+  const m = S.media.find((x) => x.id === sh.id);
+  try {
+    const text = await ocrText([m.blob], ocrState(sh));
+    sh.ocr = null;
+    await commit([{ put: ['media', { ...m, text: text.trim() || '(текст не найден)' }] }]);
+  } catch (e) {
+    sh.ocr = null;
+    renderSheet();
+    alert(`Не получилось распознать: ${e.message}`);
+  }
 }
 
 function startMic() {
@@ -826,7 +979,9 @@ async function applyVoice() {
 /* ---------- Резервная копия ---------- */
 
 async function exportBackup() {
-  const data = { app: 'lessons', version: 1, exportedAt: new Date().toISOString(), students: S.students, lessons: S.lessons, payments: S.payments, series: S.series, settings: S.settings };
+  const withMedia = S.media.length && confirm(`Включить в копию фото и файлы (${media.sizeText(S.media.reduce((a, m) => a + m.size, 0))})? «Отмена» — только расписание и оплаты.`);
+  const mediaData = withMedia ? await Promise.all(S.media.map(async ({ blob, ...m }) => ({ ...m, data: await media.toDataURL(blob) }))) : [];
+  const data = { app: 'lessons', version: 2, exportedAt: new Date().toISOString(), students: S.students, lessons: S.lessons, payments: S.payments, series: S.series, media: mediaData, settings: S.settings };
   const name = `uroki-${today()}.json`;
   const file = new File([JSON.stringify(data)], name, { type: 'application/json' });
   let saved = true;
@@ -857,6 +1012,8 @@ async function restoreBackup(file) {
     const data = validateBackup(JSON.parse(await file.text()));
     const msg = `Заменить все данные копией от ${new Date(data.exportedAt).toLocaleDateString('ru-RU')}? Учеников: ${data.students.length}, уроков: ${data.lessons.length}.`;
     if (!confirm(msg)) return;
+    data.media = await Promise.all((data.media || []).map(async ({ data: url, ...m }) => ({ ...m, blob: await media.fromDataURL(url) })));
+    for (const m of S.media) media.forget(m.id);
     await db.replaceAll(data);
     await loadAll();
     await extendAllSeries();
@@ -898,7 +1055,8 @@ const ACTIONS = {
   'lesson-del': async () => {
     const d = S.sheet.draft;
     closeSheet();
-    await commit([{ del: ['lessons', d.id] }], 'Урок удалён');
+    const files = S.media.filter((m) => m.lessonId === d.id).map((m) => ({ put: ['media', { ...m, lessonId: null }] }));
+    await commit([{ del: ['lessons', d.id] }, ...files], files.length ? 'Урок удалён, файлы остались у ученика' : 'Урок удалён');
   },
   'student-new': (b) => openStudentEdit(null, Boolean(b.dataset.push)),
   'student-open': (b) => openSheet({ type: 'student', id: b.dataset.id, full: true }, { push: Boolean(b.dataset.push) }),
@@ -922,6 +1080,7 @@ const ACTIONS = {
       ...ls.map((l) => ({ del: ['lessons', l.id] })),
       ...ps.map((p) => ({ del: ['payments', p.id] })),
       ...S.series.filter((x) => x.studentId === s.id).map((x) => ({ del: ['series', x.id] })),
+      ...S.media.filter((m) => m.studentId === s.id).map((m) => ({ del: ['media', m.id] })),
     ], `${s.name} удалён(а)`);
   },
   color: (b) => { S.sheet.draft.color = b.dataset.v; renderSheet(); },
@@ -974,6 +1133,33 @@ const ACTIONS = {
   'voice-ex': (b) => runVoice(b.dataset.t),
   'voice-clear': () => { S.sheet.result = null; S.sheet.text = ''; renderSheet(); setTimeout(() => $('[data-vtext]')?.focus(), 30); },
   'voice-apply': () => applyVoice(),
+  'batch-apply': () => applyBatch(),
+  'media-open': (b) => openSheet({ type: 'media', id: b.dataset.id, full: true }, { push: true }),
+  'media-ocr': () => ocrMedia(),
+  'media-cmd': () => {
+    const text = $('[data-mtext]')?.value || '';
+    openSheet({ type: 'voice', text, result: null, listening: false }, { push: true });
+    runVoice(text);
+  },
+  'media-copy': async () => {
+    try { await navigator.clipboard.writeText($('[data-mtext]')?.value || ''); toast('Скопировано'); } catch { toast('Не получилось скопировать'); }
+  },
+  'media-note': async () => {
+    const m = S.media.find((x) => x.id === S.sheet.id);
+    const text = ($('[data-mtext]')?.value || '').trim();
+    const les = m.lessonId && S.lessons.find((l) => l.id === m.lessonId);
+    const target = les || stById(m.studentId);
+    if (!target) return;
+    const note = [target.note, text].filter(Boolean).join('\n');
+    await commit([{ put: [les ? 'lessons' : 'students', { ...target, note }] }], 'Добавлено в заметку');
+  },
+  'media-share': () => media.share(S.media.find((x) => x.id === S.sheet.id)),
+  'media-del': async () => {
+    const m = S.media.find((x) => x.id === S.sheet.id);
+    if (!confirm(`Удалить «${m.name}»?`)) return;
+    closeSheet();
+    await commit([{ del: ['media', m.id] }], 'Файл удалён');
+  },
   'voice-nav': () => {
     const r = S.sheet.result;
     closeSheet();
@@ -1016,6 +1202,14 @@ document.addEventListener('input', (e) => {
 document.addEventListener('change', async (e) => {
   const t = e.target;
   if (t.dataset.change === 'restore' && t.files[0]) { await restoreBackup(t.files[0]); t.value = ''; return; }
+  if (t.dataset.change === 'ocr-voice' && t.files.length) { const files = [...t.files]; t.value = ''; ocrToVoice(files); return; }
+  if (t.dataset.change === 'media-add' && t.files.length) { const files = [...t.files]; t.value = ''; await addMedia(files, t.dataset.student, t.dataset.lesson); return; }
+  if (t.dataset.bi !== undefined && S.sheet?.batch) { S.sheet.batch[Number(t.dataset.bi)].on = t.checked; renderSheet(); return; }
+  if (t.matches('[data-mtext]') && S.sheet?.type === 'media') {
+    const m = S.media.find((x) => x.id === S.sheet.id);
+    if (m && m.text !== t.value) await commit([{ put: ['media', { ...m, text: t.value }] }]);
+    return;
+  }
   if (t.dataset.setting) {
     const k = t.dataset.setting;
     const v = Number(String(t.value).replace(/\s/g, ''));
@@ -1069,6 +1263,7 @@ async function loadAll() {
   [S.students, S.lessons, S.payments, S.series] = await Promise.all(db.STORES.map((s) => db.getAll(s)));
   S.settings = { ...DEFAULT_SETTINGS, ...((await db.getMeta('settings')) || {}) };
   S.lastBackup = (await db.getMeta('lastBackup')) || null;
+  S.media = await db.getAll('media');
 }
 
 /** Раскладываем регулярные уроки на 10 недель вперёд. */
