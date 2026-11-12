@@ -10,7 +10,7 @@ import { interpret, findCommands, findSchedule, findTimetable, EXAMPLES, speechS
 import { recognize } from './ocr.js';
 import * as media from './media.js';
 
-const APP_VERSION = 'v12';
+const APP_VERSION = 'v13';
 const ZOOMS = [28, 36, 46, 60, 76, 96, 124];
 const BACKUP_REMIND_DAYS = 30;
 const DEFAULT_SHEETS = [
@@ -68,7 +68,13 @@ const dayLessons = (iso) => S.lessons.filter((l) => l.date === iso && visibleLes
 const TIMELINE = { day: 1, '3day': 3, week: 7 };
 const calDays = () => {
   const n = TIMELINE[S.calMode] || 1;
-  const first = S.calMode === 'week' ? startOfWeek(S.date) : S.date;
+  let first = S.date;
+  if (S.calMode === 'week') first = startOfWeek(S.date);
+  else if (S.calMode === '3day') {
+    // Выбранный день внутри трёх показанных — диапазон не сдвигаем.
+    if (!S.anchor || S.date < S.anchor || S.date > addDays(S.anchor, 2)) S.anchor = S.date;
+    first = S.anchor;
+  }
   return Array.from({ length: n }, (_, i) => addDays(first, i));
 };
 const saveView = () => db.setMeta('view', { calMode: S.calMode, zoom: S.zoom, shown: S.shown }).catch(console.error);
@@ -1010,9 +1016,8 @@ async function applyBatch() {
   closeSheet();
   if (nav) { S.tab = 'cal'; go(nav.date); }
   if (tt) {
-    // Показываем неделю с листом школы.
+    // Показываем календарь с листом школы (вид не меняем).
     S.tab = 'cal';
-    S.calMode = 'week';
     if (!shownIds().includes(tt.sheet)) S.shown = [...shownIds(), tt.sheet];
     if (S.shown?.length === sheets().length) S.shown = null;
     S.anim = 'fade';
@@ -1267,8 +1272,8 @@ const ACTIONS = {
   overlay: (b, e) => { if (e.target === b) closeSheet(); },
   undo: () => undo(),
   'cal-mode': (b) => { if (S.calMode !== b.dataset.mode) S.anim = 'fade'; S.calMode = b.dataset.mode; saveView(); render(); },
-  'open-day': (b) => { S.anim = 'fade'; S.calMode = 'day'; go(b.dataset.date); saveView(); render(); },
-  shift: (b) => { go(addDays(S.date, Number(b.dataset.d) * calDays().length)); render(); },
+  'open-day': (b) => { S.date = b.dataset.date; render(); },
+  shift: (b) => { go(addDays(calDays()[0], Number(b.dataset.d) * calDays().length)); render(); },
   zoom: (b) => setZoom(ZOOMS[Math.max(0, Math.min(ZOOMS.length - 1, nearestZoom(S.zoom) + Number(b.dataset.d)))]),
   'sheets-open': () => openSheet({ type: 'sheets' }),
   theme: (b) => saveLook({ theme: b.dataset.v }),
@@ -1316,9 +1321,9 @@ const ACTIONS = {
     saveView();
     await saveSheets(rest);
   },
-  goto: (b) => { if (b.classList.contains('pill')) S.scrollToNow = true; go(b.dataset.date); if (S.calMode === 'month' && b.closest('.week')) S.calMode = 'day'; render(); },
+  goto: (b) => { if (b.classList.contains('pill')) S.scrollToNow = true; go(b.dataset.date); render(); },
   pick: (b) => {
-    if (S.date === b.dataset.date) { S.calMode = 'day'; go(b.dataset.date); } else S.date = b.dataset.date;
+    S.date = b.dataset.date;
     render();
   },
   month: (b) => { S.anim = Number(b.dataset.d) > 0 ? 'next' : 'prev'; S.date = `${shiftMonth(monthKey(S.date), Number(b.dataset.d))}-01`; render(); },
@@ -1454,7 +1459,7 @@ const ACTIONS = {
   'voice-nav': () => {
     const r = S.sheet.result;
     closeSheet();
-    if (r.nav.date) { S.tab = 'cal'; S.calMode = 'day'; go(r.nav.date); render(); }
+    if (r.nav.date) { S.tab = 'cal'; go(r.nav.date); render(); }
     else if (r.nav.student) openSheet({ type: 'student', id: r.nav.student, full: true });
   },
 };
@@ -1641,7 +1646,7 @@ document.addEventListener('touchend', (e) => {
   touch = null;
   if (Math.abs(dx) < 60 || Math.abs(dy) > Math.abs(dx) * 0.6) return;
   const dir = dx < 0 ? 1 : -1;
-  if (kind === 'day') go(addDays(S.date, dir * days));
+  if (kind === 'day') go(addDays(days > 1 ? calDays()[0] : S.date, dir * days));
   else if (kind === 'week') go(addDays(S.date, dir * 7));
   else if (kind === 'month') { S.anim = dir > 0 ? 'next' : 'prev'; S.date = `${shiftMonth(monthKey(S.date), dir)}-01`; }
   render();
