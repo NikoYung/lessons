@@ -434,3 +434,14 @@ body { transition: background-color .3s, color .3s; }
 
 .colors button.on { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--ink); }
 .colors .std { width: auto; padding: 0 12px; border-radius: 17px; color: #fff; font-size: 12px; font-weight: 600; }
+
+/* Барабан длительности */
+.wheels { position: relative; display: flex; align-items: center; gap: 6px; padding: 0 14px; background: var(--card-2); border-radius: 14px; margin-top: 6px; user-select: none; }
+.wheels::before { content: ''; position: absolute; left: 8px; right: 8px; top: 50%; height: 36px; margin-top: -18px; border-radius: 10px; background: var(--card); pointer-events: none; }
+.wheel { position: relative; width: 56px; height: 180px; overflow-y: auto; scroll-snap-type: y mandatory; scrollbar-width: none; overscroll-behavior: contain;
+  padding: 72px 0; box-sizing: border-box; -webkit-mask-image: linear-gradient(transparent, #000 35%, #000 65%, transparent); mask-image: linear-gradient(transparent, #000 35%, #000 65%, transparent); }
+.wheel::-webkit-scrollbar { display: none; }
+.wi { height: 36px; line-height: 36px; text-align: center; font-size: 22px; font-variant-numeric: tabular-nums; scroll-snap-align: center; color: var(--muted); transition: color .15s, transform .15s; cursor: pointer; }
+.wi.on { color: var(--ink); font-weight: 600; }
+.wu { position: relative; font-size: 15px; color: var(--muted); margin-right: 8px; }
+.wend { position: relative; margin-left: auto; font-size: 15px; font-weight: 600; color: var(--tint); }

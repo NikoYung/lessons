@@ -10,7 +10,7 @@ import { interpret, findCommands, findSchedule, findTimetable, EXAMPLES, speechS
 import { recognize } from './ocr.js';
 import * as media from './media.js';
 
-const APP_VERSION = 'v15';
+const APP_VERSION = 'v16';
 const ZOOMS = [28, 36, 46, 60, 76, 96, 124];
 const BACKUP_REMIND_DAYS = 30;
 const DEFAULT_SHEETS = [
@@ -645,6 +645,7 @@ function renderSheet() {
   root.dataset.type = S.sheet.type;
   root.innerHTML = `<div class="overlay ${fresh ? 'enter' : ''}" data-act="overlay"><div class="sheet ${S.sheet.full ? 'full' : ''} ${swapped ? 'swap' : ''}" role="dialog" aria-modal="true">${fn(S.sheet)}</div></div>`;
   if (same && !swapped && !fresh) $('.sheet', root).scrollTop = prevScroll;
+  initWheels(root);
   document.body.classList.add('locked');
 }
 
@@ -656,7 +657,49 @@ function studentOptions(sel) {
   return `<option value="" ${sel ? '' : 'selected'} disabled>Выберите ученика</option>${[...cur, ...list].map((s) => `<option value="${s.id}" ${s.id === sel ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}<option value="__new">+ Новый ученик…</option>`;
 }
 
-const DURATIONS = [30, 45, 60, 90, 120];
+const WH = 36; // высота строки барабана
+const MINS = Array.from({ length: 12 }, (_, i) => i * 5);
+const durLabel = (v) => `${v >= 60 ? `${Math.floor(v / 60)} ч ` : ''}${v % 60 || v < 60 ? `${v % 60} мин` : ''}`.trim();
+/** Барабан как в будильнике: часы и минуты (шаг 5). */
+function durWheel(val, start) {
+  const v = Math.max(5, Number(val) || 60);
+  const h = Math.min(5, Math.floor(v / 60));
+  const m = Math.round((v % 60) / 5) * 5 % 60;
+  const col = (k, items, cur, unit) => `<div class="wheel" data-wheel="${k}" data-cur="${items.indexOf(cur)}">${items.map((x) => `<div class="wi ${x === cur ? 'on' : ''}">${k === 'm' ? String(x).padStart(2, '0') : x}</div>`).join('')}</div><span class="wu">${unit}</span>`;
+  return `<div class="wheels" data-start="${start || ''}">
+    ${col('h', [0, 1, 2, 3, 4, 5], h, 'ч')}${col('m', MINS, m, 'мин')}
+    <span class="wend">${start ? `до ${fromMin(toMin(start) + v)}` : durLabel(v)}</span>
+  </div>`;
+}
+function initWheels(root) {
+  for (const w of root.querySelectorAll('.wheel')) {
+    w.scrollTop = Number(w.dataset.cur) * WH;
+    let t = 0;
+    w.addEventListener('scroll', () => {
+      clearTimeout(t);
+      const i = Math.round(w.scrollTop / WH);
+      w.querySelectorAll('.wi').forEach((x, j) => x.classList.toggle('on', j === i));
+      t = setTimeout(() => wheelDone(w.closest('.wheels')), 160);
+    }, { passive: true });
+    w.addEventListener('click', (e) => {
+      const it = e.target.closest('.wi');
+      if (it) w.scrollTo({ top: [...w.children].indexOf(it) * WH, behavior: 'smooth' });
+    });
+  }
+}
+function wheelDone(box) {
+  if (!box?.isConnected || !S.sheet?.draft) return;
+  const idx = (k) => Math.round(box.querySelector(`[data-wheel="${k}"]`).scrollTop / WH);
+  const h = idx('h');
+  let m = MINS[Math.min(11, idx('m'))];
+  if (!h && !m) { m = 5; box.querySelector('[data-wheel="m"]').scrollTo({ top: WH, behavior: 'smooth' }); }
+  const v = h * 60 + m;
+  if (Number(S.sheet.draft.duration) === v) return;
+  S.sheet.draft.duration = v;
+  const st = box.dataset.start;
+  box.querySelector('.wend').textContent = st ? `до ${fromMin(toMin(st) + v)}` : durLabel(v);
+  if (S.sheet.type === 'lesson') renderSheet(); // пересечения и «этот / следующие»
+}
 
 /* Урок */
 function lessonSheet(sh) {
@@ -680,10 +723,7 @@ function lessonSheet(sh) {
       <label class="field">День<input class="input" type="date" value="${d.date}" data-field="date"></label>
       <label class="field">Начало<input class="input" type="time" value="${d.start}" step="300" data-field="start"></label>
     </div>
-    <div class="field">Длительность
-      <div class="seg seg-n">${DURATIONS.map((m) => `<button data-act="dur" data-v="${m}" class="${d.duration === m ? 'on' : ''}">${m < 60 ? m : m === 60 ? '1 ч' : m === 90 ? '1,5 ч' : '2 ч'}</button>`).join('')}</div>
-      ${DURATIONS.includes(d.duration) ? '' : `<span class="note">${d.duration} мин</span>`}
-    </div>
+    <div class="field">Длительность${durWheel(d.duration, d.start)}</div>
     ${isBusy(stu) ? '' : `<label class="field">Цена${stu ? ` (обычная ${formatRub(priceAt(stu, d.date))})` : ''}<input class="input" inputmode="numeric" placeholder="${stu ? priceAt(stu, d.date) : ''}" value="${d.price ?? ''}" data-field="price"></label>`}
     ${clash.length ? `<div class="warn-box">Пересекается: ${clash.map((l) => `${esc(stById(l.studentId)?.name || '')} ${l.start}–${endTime(l)}`).join(', ')}</div>` : ''}
     ${sh.isNew ? `
@@ -886,8 +926,8 @@ function studentEditSheet(sh) {
     <label class="toggle"><input type="checkbox" data-field="busy" ${d.kind === 'busy' ? 'checked' : ''}><span>Не урок — школа, встречи (в деньгах не считать)</span></label>
     <div class="two">
       <label class="field" ${d.kind === 'busy' ? 'hidden' : ''}>Цена урока, ₽<input class="input" inputmode="numeric" value="${d.price}" data-field="price"></label>
-      <label class="field">Длительность, мин<input class="input" inputmode="numeric" value="${d.duration}" data-field="duration"></label>
     </div>
+    <div class="field">Длительность урока${durWheel(d.duration)}</div>
     ${!sh.isNew && Number(d.price) !== sh.oldPrice ? `<label class="field">Новая цена действует с<input class="input" type="date" value="${d.priceFrom}" data-field="priceFrom"><span class="note">Уроки до этой даты остаются по ${formatRub(sh.oldPrice)}</span></label>` : ''}
     <div class="field">Цвет<div class="colors">${COLORS.map((c) => `<button class="${d.color === c ? 'on' : ''}" style="background:${c}" data-act="color" data-v="${c}" aria-label="Цвет"></button>`).join('')}</div></div>
     <label class="field">Заметки, контакты<textarea class="input area" data-field="note" placeholder="Телефон родителя, цели, учебник…">${esc(d.note)}</textarea></label>
@@ -975,7 +1015,9 @@ function seriesSheet(sh) {
     <div class="field">Дни недели<div class="days">${WD_SHORT.map((w, i) => `<button class="${d.days.includes(i) ? 'on' : ''}" data-act="sday" data-v="${i}">${w}</button>`).join('')}</div></div>
     <div class="two">
       <label class="field">Начало<input class="input" type="time" value="${d.start}" step="300" data-field="start"></label>
-      <label class="field">Длительность, мин<input class="input" inputmode="numeric" value="${d.duration}" data-field="duration"></label>
+    </div>
+    <div class="field">Длительность${durWheel(d.duration, d.start)}</div>
+    <div>
     </div>
     <label class="field">Начиная с<input class="input" type="date" value="${d.from}" data-field="from"></label>
     <button class="btn primary" data-act="series-save" ${d.days.length ? '' : 'disabled'}>Создать уроки</button>`;
