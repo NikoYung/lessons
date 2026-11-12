@@ -10,13 +10,19 @@ import { interpret, findCommands, findSchedule, EXAMPLES, speechSupported, liste
 import { recognize } from './ocr.js';
 import * as media from './media.js';
 
-const HOUR_PX = 60;
+const ZOOMS = [28, 36, 46, 60, 76, 96, 124];
 const BACKUP_REMIND_DAYS = 30;
-const DEFAULT_SETTINGS = { price: 1500, duration: 60, dayStart: 8, dayEnd: 22 };
+const DEFAULT_SHEETS = [
+  { id: 'tutor', name: 'Репетиторство', color: '#007aff' },
+  { id: 'school', name: 'Школа', color: '#ff9500' },
+];
+const DEFAULT_SETTINGS = { price: 1500, duration: 60, dayStart: 8, dayEnd: 22, sheets: DEFAULT_SHEETS };
 
 const S = {
   tab: 'cal',
-  calMode: 'day',
+  calMode: 'day', // day | 3day | week | month
+  zoom: 60, // пикселей на час
+  shown: null, // какие листы показаны; null — все
   date: toISO(new Date()),
   moneyMonth: monthKey(toISO(new Date())),
   students: [],
@@ -39,7 +45,27 @@ const now = () => new Date();
 const today = () => toISO(new Date());
 const stById = (id) => S.students.find((s) => s.id === id);
 const activeStudents = () => S.students.filter((s) => !s.archived).sort((a, b) => a.name.localeCompare(b.name, 'ru'));
-const dayLessons = (iso) => S.lessons.filter((l) => l.date === iso).sort(sortLessons);
+/* Листы календаря: у каждого ученика (класса) свой лист — «Репетиторство», «Школа»… */
+const sheets = () => (S.settings.sheets?.length ? S.settings.sheets : DEFAULT_SHEETS);
+const sheetById = (id) => sheets().find((x) => x.id === id);
+const sheetOf = (stu) => (stu && sheetById(stu.sheet) ? stu.sheet : sheets()[0].id);
+const shownIds = () => {
+  const ids = (S.shown || []).filter((id) => sheetById(id));
+  return ids.length ? ids : sheets().map((x) => x.id);
+};
+const allShown = () => shownIds().length === sheets().length;
+const visibleStudent = (stu) => shownIds().includes(sheetOf(stu));
+/** Лист для нового ученика: открытый сейчас, если открыт один. */
+const defaultSheet = () => (allShown() ? sheets()[0].id : shownIds()[0]);
+/** Уроки дня в календаре — только с показанных листов. */
+const dayLessons = (iso) => S.lessons.filter((l) => l.date === iso && visibleStudent(stById(l.studentId))).sort(sortLessons);
+const TIMELINE = { day: 1, '3day': 3, week: 7 };
+const calDays = () => {
+  const n = TIMELINE[S.calMode] || 1;
+  const first = S.calMode === 'week' ? startOfWeek(S.date) : S.date;
+  return Array.from({ length: n }, (_, i) => addDays(first, i));
+};
+const saveView = () => db.setMeta('view', { calMode: S.calMode, zoom: S.zoom, shown: S.shown }).catch(console.error);
 const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 
 /* ---------- Тост с отменой ---------- */
@@ -77,6 +103,7 @@ function applyLocal(ops) {
 
 /** Сохранить изменения; возвращает обратные операции для «Вернуть». */
 async function commit(ops, msg) {
+  for (const o of ops) if (o.put?.[0] === 'students' && !o.put[1].sheet) o.put[1] = { ...o.put[1], sheet: defaultSheet() };
   const inverse = [];
   for (const o of [...ops].reverse()) {
     const [store, x] = o.put || o.del;
@@ -106,16 +133,34 @@ async function undo() {
 function calHeader() {
   const d = fromISO(S.date);
   const isToday = S.date === today();
+  const modes = [['day', 'День'], ['3day', '3 дня'], ['week', 'Неделя'], ['month', 'Месяц']];
   return `
     <div class="cal-head">
-      <button class="cal-title" data-act="cal-mode" data-mode="${S.calMode === 'day' ? 'month' : 'day'}">
-        ${S.calMode === 'day' ? '‹ ' : ''}${cap(monthTitle(monthKey(S.date)).split(' ')[0])}<span class="muted"> ${d.getFullYear()}</span>
+      <button class="cal-title" data-act="cal-mode" data-mode="month">
+        ${cap(monthTitle(monthKey(S.date)).split(' ')[0])}${d.getFullYear() !== now().getFullYear() ? `<span class="muted"> ${d.getFullYear()}</span>` : ''}
       </button>
       <div class="cal-tools">
+        ${S.calMode === 'month' ? '' : zoomBtns()}
         <button class="pill ${isToday ? 'dim' : ''}" data-act="goto" data-date="${today()}">Сегодня</button>
         <button class="icon-btn" data-act="lesson-new" aria-label="Новый урок">+</button>
       </div>
-    </div>`;
+    </div>
+    <div class="seg cal-seg">${modes.map(([m, t]) => `<button class="${S.calMode === m ? 'on' : ''}" data-act="cal-mode" data-mode="${m}">${t}</button>`).join('')}</div>
+    ${sheetBar()}`;
+}
+
+/** Переключатель листов. Один лист — только его уроки; отметить ещё — листы совмещаются. */
+function sheetBar() {
+  const list = sheets();
+  if (list.length < 2) return '';
+  const ids = shownIds();
+  const all = allShown();
+  return `
+    <div class="sheets" role="group" aria-label="Листы">
+      <button class="sh ${all ? 'on' : ''}" data-act="sheet-all">Все</button>
+      ${list.map((x) => `<button class="sh ${!all && ids.includes(x.id) ? 'on' : ''}" style="--c:${x.color}" data-act="sheet-tap" data-id="${x.id}"><i></i>${esc(x.name)}</button>`).join('')}
+    </div>
+    ${!all && ids.length > 1 ? `<p class="sh-note">Совмещено: ${ids.map((id) => esc(sheetById(id).name)).join(' + ')}</p>` : ''}`;
 }
 
 function weekStrip() {
@@ -136,10 +181,25 @@ function weekStrip() {
   return `<div class="week" data-swipe="week">${cells.join('')}</div>`;
 }
 
+const zoomBtns = () => `<span class="zoom">
+    <button data-act="zoom" data-d="-1" ${S.zoom <= ZOOMS[0] ? 'disabled' : ''} aria-label="Мельче">−</button>
+    <button data-act="zoom" data-d="1" ${S.zoom >= ZOOMS.at(-1) ? 'disabled' : ''} aria-label="Крупнее">+</button></span>`;
+
 function daySummary(iso) {
   const ls = dayLessons(iso).filter((l) => l.status !== 'cancelled' && !isBusy(stById(l.studentId)));
   const sum = ls.reduce((a, l) => a + lessonPrice(l, stById(l.studentId)), 0);
   return `<div class="day-sum"><strong>${cap(dayTitle(iso, { full: true }))}</strong><span class="muted">${ls.length ? `${lessonsWord(ls.length)} · ${formatRub(sum)}` : 'Нет уроков'}</span></div>`;
+}
+
+function rangeSummary(days) {
+  const ls = days.flatMap((d) => dayLessons(d)).filter((l) => l.status !== 'cancelled' && !isBusy(stById(l.studentId)));
+  const sum = ls.reduce((a, l) => a + lessonPrice(l, stById(l.studentId)), 0);
+  const a = fromISO(days[0]);
+  const b = fromISO(days.at(-1));
+  const title = a.getMonth() === b.getMonth() ? `${a.getDate()}–${b.getDate()} ${MONTHS_GEN[b.getMonth()]}` : `${a.getDate()} ${MONTHS_GEN[a.getMonth()]} – ${b.getDate()} ${MONTHS_GEN[b.getMonth()]}`;
+  return `<div class="day-sum">
+      <span class="rng"><button data-act="shift" data-d="-1" aria-label="Назад">‹</button><strong>${title}</strong><button data-act="shift" data-d="1" aria-label="Вперёд">›</button></span>
+      <span class="muted">${ls.length ? `${lessonsWord(ls.length)} · ${formatRub(sum)}` : 'Нет уроков'}</span></div>`;
 }
 
 /** Раскладка пересекающихся уроков по колонкам. */
@@ -171,42 +231,59 @@ function lessonBlockClass(st) {
   return { done: 'is-done', missed: 'is-missed', cancelled: 'is-cancelled', planned: '' }[st];
 }
 
-function timeline(iso) {
-  const ls = dayLessons(iso);
+/**
+ * Шкала времени на один или несколько дней. Все высоты — через var(--hp) (пикселей на час),
+ * поэтому масштаб щипком меняется плавно, без перерисовки.
+ */
+function timeline(days) {
+  const N = days.length;
+  const perDay = days.map((d) => dayLessons(d));
   let h0 = S.settings.dayStart;
   let h1 = S.settings.dayEnd;
-  for (const l of ls) {
+  for (const l of perDay.flat()) {
     h0 = Math.min(h0, Math.floor(toMin(l.start) / 60));
     h1 = Math.max(h1, Math.ceil((toMin(l.start) + l.duration) / 60));
   }
   const n = now();
-  const hours = [];
+  const t = toISO(n);
+  const mixed = shownIds().length > 1 && sheets().length > 1;
+  const colL = (x) => `calc(56px + (100% - 60px) * ${x})`;
+  const parts = [];
   for (let h = h0; h <= h1; h++) {
-    hours.push(`<div class="hr" style="top:${(h - h0) * HOUR_PX}px"><span>${pad(h)}:00</span></div>`);
-    if (h < h1) hours.push(`<button class="slot" data-act="slot" data-h="${h}" style="top:${(h - h0) * HOUR_PX}px;height:${HOUR_PX}px" aria-label="Урок в ${pad(h)}:00"></button>`);
+    parts.push(`<div class="hr" style="top:calc(${h - h0} * var(--hp))"><span>${pad(h)}:00</span></div>`);
+    if (h === h1) continue;
+    days.forEach((d, di) => parts.push(`<button class="slot" data-act="slot" data-h="${h}" data-date="${d}" style="top:calc(${h - h0} * var(--hp));height:var(--hp);left:${colL(di / N)};width:calc((100% - 60px) / ${N})" aria-label="Урок ${dayTitle(d)} в ${pad(h)}:00"></button>`));
   }
-  const blocks = layoutColumns(ls).map(({ l, s, col, cols }) => {
-    const stu = stById(l.studentId);
-    const st = statusOf(l, n);
-    const top = ((s - h0 * 60) / 60) * HOUR_PX;
-    const h = Math.max((l.duration / 60) * HOUR_PX - 2, 22);
-    const tag = st === 'done' ? '✓' : st === 'missed' ? 'пропуск' : st === 'cancelled' ? 'отменён' : '';
-    return `
-      <button class="lb ${lessonBlockClass(st)} ${h < 40 ? 'tiny' : ''}" data-act="lesson-open" data-id="${l.id}"
-        style="--c:${stu?.color || '#8e8e93'};top:${top}px;height:${h}px;left:calc(56px + (100% - 60px) * ${col / cols});width:calc((100% - 60px) / ${cols} - 3px)">
+  for (let di = 1; di < N; di++) parts.push(`<div class="vl" style="left:${colL(di / N)}"></div>`);
+  days.forEach((d, di) => {
+    for (const { l, s, col, cols } of layoutColumns(perDay[di])) {
+      const stu = stById(l.studentId);
+      const st = statusOf(l, n);
+      const hpx = (l.duration / 60) * S.zoom;
+      const tag = st === 'done' ? '✓' : st === 'missed' ? 'пропуск' : st === 'cancelled' ? 'отменён' : '';
+      const sh = mixed ? sheetById(sheetOf(stu)) : null;
+      parts.push(`
+      <button class="lb ${lessonBlockClass(st)} ${hpx < 40 ? 'tiny' : ''}" data-act="lesson-open" data-id="${l.id}"
+        style="--c:${stu?.color || '#8e8e93'};top:calc(${(s - h0 * 60) / 60} * var(--hp));height:max(22px, calc(${l.duration / 60} * var(--hp) - 2px));left:${colL((di + col / cols) / N)};width:calc((100% - 60px) / ${N * cols} - 2px)">
+        ${sh ? `<i class="lb-sh" style="background:${sh.color}" title="${esc(sh.name)}"></i>` : ''}
         <span class="lb-name">${esc(stu?.name || 'Без ученика')}</span>
-        <span class="lb-time">${l.start}–${endTime(l)}${tag ? ` · ${tag}` : ''}</span>
-        ${l.note && h >= 56 ? `<span class="lb-note">${esc(l.note)}</span>` : ''}
-      </button>`;
-  }).join('');
-  let line = '';
-  if (iso === toISO(n)) {
+        <span class="lb-time">${N > 3 ? l.start : `${l.start}–${endTime(l)}`}${tag && N < 7 ? ` · ${tag}` : ''}</span>
+        ${l.note && hpx >= 56 && N === 1 ? `<span class="lb-note">${esc(l.note)}</span>` : ''}
+      </button>`);
+    }
+  });
+  const di = days.indexOf(t);
+  if (di >= 0) {
     const m = nowMin(n);
     if (m >= h0 * 60 && m <= h1 * 60) {
-      line = `<div class="now" style="top:${((m - h0 * 60) / 60) * HOUR_PX}px"><span>${fromMin(m)}</span></div>`;
+      parts.push(`<div class="now ${N > 1 ? 'part' : ''}" style="top:calc(${(m - h0 * 60) / 60} * var(--hp));${N > 1 ? `left:${colL(di / N)};width:calc((100% - 60px) / ${N})` : ''}"><span>${fromMin(m)}</span></div>`);
     }
   }
-  return `<div class="tl" data-swipe="day" style="height:${(h1 - h0) * HOUR_PX + 16}px" data-h0="${h0}">${hours.join('')}${blocks}${line}</div>`;
+  const head = N > 1 ? `<div class="mdh" style="grid-template-columns:52px repeat(${N}, 1fr)"><span></span>${days.map((d) => {
+    const dd = fromISO(d);
+    return `<button class="${d === t ? 'today' : ''} ${d === S.date ? 'sel' : ''}" data-act="open-day" data-date="${d}"><span>${WD_SHORT[weekday(d)]}</span><b>${dd.getDate()}</b></button>`;
+  }).join('')}</div>` : '';
+  return `${head}<div class="tl ${N > 1 ? `multi n${N}` : ''}" data-swipe="day" data-n="${N}" style="--hp:${S.zoom}px;height:calc(${h1 - h0} * var(--hp) + 16px)" data-h0="${h0}">${parts.join('')}</div>`;
 }
 
 function monthGrid() {
@@ -277,7 +354,9 @@ function calView() {
   if (S.calMode === 'month') {
     return `${calHeader()}${backupBanner()}${monthGrid()}${daySummary(S.date)}${agenda(S.date)}${onboarding()}`;
   }
-  return `${calHeader()}${weekStrip()}${backupBanner()}${daySummary(S.date)}${onboarding()}${timeline(S.date)}`;
+  if (S.calMode === 'day') return `${calHeader()}${weekStrip()}${backupBanner()}${daySummary(S.date)}${onboarding()}${timeline([S.date])}`;
+  const days = calDays();
+  return `${calHeader()}${backupBanner()}${rangeSummary(days)}${onboarding()}${timeline(days)}`;
 }
 
 /* ---------- Ученики ---------- */
@@ -307,8 +386,15 @@ function studentsView() {
   return `
     <div class="page-head"><h1 class="title">${S.showArchived ? 'Архив' : 'Ученики'}</h1><button class="icon-btn" data-act="student-new" aria-label="Новый ученик">+</button></div>
     ${S.students.length > 6 ? `<input class="search" type="search" placeholder="Поиск" value="${esc(S.query)}" data-input="query">` : ''}
-    ${list.some((s) => !isBusy(s)) ? `<div class="list">${list.filter((s) => !isBusy(s)).map(studentRow).join('')}</div>` : ''}
-    ${list.some(isBusy) ? `<h2 class="section-title mt">Занятость</h2><div class="list">${list.filter(isBusy).map(studentRow).join('')}</div>` : ''}
+    ${sheetBar()}
+    ${sheets().filter((x) => shownIds().includes(x.id)).map((x) => {
+    const mine = list.filter((s) => sheetOf(s) === x.id);
+    if (!mine.length) return '';
+    const title = sheets().length > 1 ? `<h2 class="section-title mt"><i class="dot" style="background:${x.color}"></i> ${esc(x.name)}</h2>` : '';
+    return `${title}
+      ${mine.some((s) => !isBusy(s)) ? `<div class="list">${mine.filter((s) => !isBusy(s)).map(studentRow).join('')}</div>` : ''}
+      ${mine.some(isBusy) ? `<h3 class="sub mt">Занятость</h3><div class="list">${mine.filter(isBusy).map(studentRow).join('')}</div>` : ''}`;
+  }).join('')}
     ${list.length ? '' : `<div class="empty">${S.showArchived ? 'Архив пуст' : 'Учеников пока нет'}<br>${S.showArchived ? '' : '<button class="link" data-act="student-new">Добавить ученика</button>'}</div>`}
     ${archivedCount || S.showArchived ? `<button class="btn ghost" data-act="toggle-archived">${S.showArchived ? '← Активные ученики' : `Архив (${archivedCount})`}</button>` : ''}`;
 }
@@ -390,6 +476,18 @@ function moreView() {
       </div>
     </section>
     <section class="card">
+      <h2 class="section-title">Листы календаря</h2>
+      <p class="muted small">У каждого ученика (класса) свой лист. Вверху календаря: нажмите лист — будут только его уроки, нажмите ещё один — листы совместятся, «Все» — всё расписание сразу.</p>
+      <div class="sheet-list">${sheets().map((x) => `
+        <div class="sheet-row">
+          <i class="dot" style="background:${x.color}"></i>
+          <input class="input" value="${esc(x.name)}" data-sheetname="${x.id}" aria-label="Название листа">
+          <span class="muted small">${S.students.filter((s) => sheetOf(s) === x.id).length}</span>
+          ${sheets().length > 1 ? `<button class="link danger-t" data-act="sheet-del" data-id="${x.id}" aria-label="Удалить лист">✕</button>` : ''}
+        </div>`).join('')}</div>
+      <button class="btn mt" data-act="sheet-add">+ Новый лист</button>
+    </section>
+    <section class="card">
       <h2 class="section-title">Резервная копия</h2>
       <p class="muted small">Все данные хранятся только на этом телефоне. Раз в месяц сохраняйте копию в «Файлы» или отправьте себе.</p>
       <div class="row-btns mt">
@@ -422,14 +520,15 @@ function render() {
   const html = { cal: calView, students: studentsView, money: moneyView, more: moreView }[S.tab]();
   view.innerHTML = html;
   for (const b of document.querySelectorAll('#tabs [data-tab]')) b.classList.toggle('on', b.dataset.tab === S.tab);
-  if (S.tab === 'cal' && S.calMode === 'day' && S.scrollToNow) {
+  if (S.tab === 'cal' && S.calMode !== 'month' && S.scrollToNow) {
     S.scrollToNow = false;
     const tl = $('.tl');
     if (tl) {
-      const first = dayLessons(S.date)[0];
+      const days = calDays();
+      const first = days.flatMap((d) => dayLessons(d)).sort((a, b) => toMin(a.start) - toMin(b.start))[0];
       const h0 = Number(tl.dataset.h0);
-      const target = S.date === today() ? nowMin(now()) - 90 : first ? toMin(first.start) - 30 : (h0 + 1) * 60;
-      view.scrollTop = Math.max(0, tl.offsetTop + ((target - h0 * 60) / 60) * HOUR_PX - 20);
+      const target = days.includes(today()) ? nowMin(now()) - 90 : first ? toMin(first.start) - 30 : (h0 + 1) * 60;
+      view.scrollTop = Math.max(0, tl.offsetTop + ((target - h0 * 60) / 60) * S.zoom - 20);
     }
   }
   renderSheet();
@@ -614,6 +713,7 @@ function studentEditSheet(sh) {
     ${head(sh.isNew ? 'Новый ученик' : 'Изменить ученика')}
     <label class="field">Имя<input class="input" value="${esc(d.name)}" data-field="name" placeholder="Маша" autocomplete="off"></label>
     <label class="field">Другие имена для голоса<input class="input" value="${esc(d.aliases)}" data-field="aliases" placeholder="Мария, Маруся, Иванова"></label>
+    ${sheets().length > 1 ? `<div class="field">Лист<div class="seg">${sheets().map((x) => `<button class="${d.sheet === x.id ? 'on' : ''}" data-act="draft-sheet" data-id="${x.id}">${esc(x.name)}</button>`).join('')}</div></div>` : ''}
     <label class="toggle"><input type="checkbox" data-field="busy" ${d.kind === 'busy' ? 'checked' : ''}><span>Не урок — школа, встречи (в деньгах не считать)</span></label>
     <div class="two">
       <label class="field" ${d.kind === 'busy' ? 'hidden' : ''}>Цена урока, ₽<input class="input" inputmode="numeric" value="${d.price}" data-field="price"></label>
@@ -635,8 +735,8 @@ function openStudentEdit(id, push) {
     oldPrice: s ? priceAt(s, t) : null,
     priceHistory: s?.prices || [],
     draft: s
-      ? { id: s.id, kind: s.kind || 'student', name: s.name, aliases: s.aliases || '', price: priceAt(s, t), duration: s.duration, color: s.color, note: s.note || '', archived: s.archived, priceFrom: t }
-      : { id: uid(), kind: 'student', name: '', aliases: '', price: S.settings.price, duration: S.settings.duration, color: nextColor(S.students), note: '', archived: false, priceFrom: t },
+      ? { id: s.id, kind: s.kind || 'student', sheet: sheetOf(s), name: s.name, aliases: s.aliases || '', price: priceAt(s, t), duration: s.duration, color: s.color, note: s.note || '', archived: s.archived, priceFrom: t }
+      : { id: uid(), kind: 'student', sheet: defaultSheet(), name: '', aliases: '', price: S.settings.price, duration: S.settings.duration, color: nextColor(S.students), note: '', archived: false, priceFrom: t },
   }, { push });
 }
 
@@ -651,9 +751,9 @@ async function saveStudent() {
   if (!(duration >= 10 && duration <= 300)) return toast('Длительность от 10 до 300 минут');
   let s = stById(d.id);
   if (!s) {
-    s = { id: d.id, kind: d.kind, name, aliases: d.aliases.trim(), color: d.color, duration, prices: [{ from: '2000-01-01', price }], note: d.note, archived: false, createdAt: Date.now() };
+    s = { id: d.id, kind: d.kind, sheet: d.sheet, name, aliases: d.aliases.trim(), color: d.color, duration, prices: [{ from: '2000-01-01', price }], note: d.note, archived: false, createdAt: Date.now() };
   } else {
-    s = { ...s, kind: d.kind, name, aliases: d.aliases.trim(), color: d.color, duration, note: d.note };
+    s = { ...s, kind: d.kind, sheet: d.sheet, name, aliases: d.aliases.trim(), color: d.color, duration, note: d.note };
     if (price !== sh.oldPrice) s = withPrice(s, price, d.priceFrom || today());
   }
   closeSheet();
@@ -1062,7 +1162,40 @@ const ACTIONS = {
   close: () => closeSheet(),
   overlay: (b, e) => { if (e.target === b) closeSheet(); },
   undo: () => undo(),
-  'cal-mode': (b) => { S.calMode = b.dataset.mode; S.scrollToNow = true; render(); },
+  'cal-mode': (b) => { S.calMode = b.dataset.mode; S.scrollToNow = true; saveView(); render(); },
+  'open-day': (b) => { S.calMode = 'day'; go(b.dataset.date); saveView(); render(); },
+  shift: (b) => { go(addDays(S.date, Number(b.dataset.d) * calDays().length)); render(); },
+  zoom: (b) => setZoom(ZOOMS[Math.max(0, Math.min(ZOOMS.length - 1, nearestZoom(S.zoom) + Number(b.dataset.d)))]),
+  'sheet-all': () => { S.shown = null; saveView(); render(); },
+  'sheet-tap': (b) => {
+    const id = b.dataset.id;
+    let ids = shownIds();
+    if (allShown()) ids = [id];
+    else if (ids.includes(id)) { if (ids.length > 1) ids = ids.filter((x) => x !== id); }
+    else ids = [...ids, id];
+    S.shown = ids.length === sheets().length ? null : ids;
+    saveView();
+    render();
+  },
+  'draft-sheet': (b) => { S.sheet.draft.sheet = b.dataset.id; renderSheet(); },
+  'sheet-add': async () => {
+    const name = (prompt('Название листа', 'Новый лист') || '').trim();
+    if (!name) return;
+    const used = sheets().map((x) => x.color);
+    const color = COLORS.find((c) => !used.includes(c)) || COLORS[sheets().length % COLORS.length];
+    await saveSheets([...sheets(), { id: uid(), name, color }]);
+    toast(`Лист «${name}» добавлен`);
+  },
+  'sheet-del': async (b) => {
+    const x = sheetById(b.dataset.id);
+    const rest = sheets().filter((y) => y.id !== x.id);
+    const mine = S.students.filter((s) => sheetOf(s) === x.id);
+    if (!confirm(`Удалить лист «${x.name}»?${mine.length ? ` Ученики (${mine.length}) и их уроки перейдут на лист «${rest[0].name}».` : ''}`)) return;
+    if (mine.length) await commit(mine.map((s) => ({ put: ['students', { ...s, sheet: rest[0].id }] })));
+    S.shown = S.shown?.filter((id) => id !== x.id) || null;
+    saveView();
+    await saveSheets(rest);
+  },
   goto: (b) => { go(b.dataset.date); if (S.calMode === 'month' && b.closest('.week')) S.calMode = 'day'; render(); },
   pick: (b) => {
     if (S.date === b.dataset.date) { S.calMode = 'day'; go(b.dataset.date); } else S.date = b.dataset.date;
@@ -1070,7 +1203,7 @@ const ACTIONS = {
   },
   month: (b) => { S.date = `${shiftMonth(monthKey(S.date), Number(b.dataset.d))}-01`; render(); },
   'money-month': (b) => { S.moneyMonth = shiftMonth(S.moneyMonth, Number(b.dataset.d)); render(); },
-  slot: (b) => openSheet({ type: 'lesson', isNew: true, draft: newLessonDraft(S.date, `${pad(Number(b.dataset.h))}:00`, lastStudent()) }),
+  slot: (b) => openSheet({ type: 'lesson', isNew: true, draft: newLessonDraft(b.dataset.date || S.date, `${pad(Number(b.dataset.h))}:00`, lastStudent()) }),
   'lesson-new': (b) => {
     const sid = b.dataset.student || '';
     const t = S.date === today() ? fromMin(Math.min(23 * 60, Math.ceil((nowMin(now()) + 1) / 60) * 60)) : `${pad(Math.max(S.settings.dayStart, 15))}:00`;
@@ -1206,6 +1339,27 @@ const ACTIONS = {
   },
 };
 
+async function saveSheets(list) {
+  S.settings = { ...S.settings, sheets: list };
+  await db.setMeta('settings', S.settings);
+  render();
+}
+
+const nearestZoom = (z) => ZOOMS.reduce((bi, v, i) => (Math.abs(v - z) < Math.abs(ZOOMS[bi] - z) ? i : bi), 0);
+/** Меняем масштаб, сохраняя на месте то время, что было посередине экрана. */
+function setZoom(z, { save = true } = {}) {
+  const view = $('#view');
+  const tl = $('.tl');
+  const old = S.zoom;
+  S.zoom = Math.round(Math.max(ZOOMS[0], Math.min(ZOOMS.at(-1), z)));
+  if (tl) {
+    const mid = view.scrollTop + view.clientHeight / 2 - tl.offsetTop;
+    tl.style.setProperty('--hp', `${S.zoom}px`);
+    view.scrollTop = tl.offsetTop + (mid * S.zoom) / old - view.clientHeight / 2;
+  }
+  if (save) { saveView(); render(); }
+}
+
 function lastStudent() {
   return activeStudents().length === 1 ? activeStudents()[0].id : '';
 }
@@ -1253,6 +1407,11 @@ document.addEventListener('change', async (e) => {
     if (m && m.text !== t.value) await commit([{ put: ['media', { ...m, text: t.value }] }]);
     return;
   }
+  if (t.dataset.sheetname) {
+    const name = t.value.trim();
+    if (name) await saveSheets(sheets().map((x) => (x.id === t.dataset.sheetname ? { ...x, name } : x)));
+    return;
+  }
   if (t.dataset.setting) {
     const k = t.dataset.setting;
     const v = Number(String(t.value).replace(/\s/g, ''));
@@ -1284,17 +1443,38 @@ document.addEventListener('keydown', (e) => {
 let touch = null;
 document.addEventListener('touchstart', (e) => {
   const area = e.target.closest('[data-swipe]');
-  touch = area && e.touches.length === 1 ? { x: e.touches[0].clientX, y: e.touches[0].clientY, kind: area.dataset.swipe } : null;
+  if (e.touches.length === 2 && e.target.closest('.tl')) {
+    const [a, b] = e.touches;
+    pinch = { d: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY), z: S.zoom };
+    touch = null;
+    return;
+  }
+  touch = area && e.touches.length === 1 ? { x: e.touches[0].clientX, y: e.touches[0].clientY, kind: area.dataset.swipe, n: Number(area.dataset.n) || 1 } : null;
 }, { passive: true });
+/* Щипок по шкале времени — масштаб. */
+let pinch = null;
+document.addEventListener('touchmove', (e) => {
+  if (!pinch || e.touches.length !== 2) return;
+  e.preventDefault();
+  const [a, b] = e.touches;
+  const d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+  setZoom(pinch.z * (d / pinch.d), { save: false });
+}, { passive: false });
+document.addEventListener('gesturestart', (e) => { if (e.target.closest?.('.tl')) e.preventDefault(); });
 document.addEventListener('touchend', (e) => {
+  if (pinch) {
+    if (e.touches.length < 2) { pinch = null; saveView(); render(); }
+    return;
+  }
   if (!touch) return;
   const dx = e.changedTouches[0].clientX - touch.x;
   const dy = e.changedTouches[0].clientY - touch.y;
   const kind = touch.kind;
+  const days = touch.n;
   touch = null;
   if (Math.abs(dx) < 60 || Math.abs(dy) > Math.abs(dx) * 0.6) return;
   const dir = dx < 0 ? 1 : -1;
-  if (kind === 'day') go(addDays(S.date, dir));
+  if (kind === 'day') go(addDays(S.date, dir * days));
   else if (kind === 'week') go(addDays(S.date, dir * 7));
   else if (kind === 'month') S.date = `${shiftMonth(monthKey(S.date), dir)}-01`;
   render();
@@ -1306,6 +1486,10 @@ async function loadAll() {
   [S.students, S.lessons, S.payments, S.series] = await Promise.all(db.STORES.map((s) => db.getAll(s)));
   S.settings = { ...DEFAULT_SETTINGS, ...((await db.getMeta('settings')) || {}) };
   S.lastBackup = (await db.getMeta('lastBackup')) || null;
+  const v = (await db.getMeta('view')) || {};
+  if (['day', '3day', 'week', 'month'].includes(v.calMode)) S.calMode = v.calMode;
+  if (v.zoom) S.zoom = v.zoom;
+  S.shown = v.shown || null;
   S.media = await db.getAll('media');
 }
 
@@ -1325,10 +1509,19 @@ async function extendAllSeries() {
   }
 }
 
+/** Один раз: ученикам без листа — «Репетиторство», занятость «Школа» — на лист «Школа». */
+async function initSheets() {
+  if (await db.getMeta('sheetsInit')) return;
+  const ops = S.students.filter((s) => !s.sheet).map((s) => ({ put: ['students', { ...s, sheet: isBusy(s) && /школ/i.test(s.name) && sheetById('school') ? 'school' : sheets()[0].id }] }));
+  if (ops.length) { await db.apply(ops); applyLocal(ops); }
+  await db.setMeta('sheetsInit', true);
+}
+
 async function start() {
   await db.openDB();
   await loadAll();
   await extendAllSeries();
+  await initSheets();
   render();
   // Обновляем линию «сейчас» и смену дня.
   let lastDay = today();

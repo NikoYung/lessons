@@ -1,5 +1,5 @@
 // Офлайн: всё приложение кэшируется при установке. При правке файлов поднимай VERSION.
-const VERSION = 'v6';
+const VERSION = 'v7';
 const OCR_CACHE = 'lessons-ocr-7.0.0'; // модуль распознавания — отдельно, чтобы обновления не качали его заново
 const CACHE = `lessons-${VERSION}`;
 

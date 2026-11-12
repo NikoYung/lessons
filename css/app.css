@@ -306,3 +306,42 @@ details div { padding: 3px 0; }
 .vres.pick input { width: 24px; height: 24px; flex: none; margin-top: 2px; accent-color: var(--tint); }
 .vres.pick.off { opacity: .55; }
 .vres .sub { font-style: italic; margin-bottom: 4px; }
+
+/* Виды календаря, масштаб, листы */
+.cal-seg { margin-top: 2px; }
+.sheets { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; padding: 2px 0; }
+.sheets::-webkit-scrollbar { display: none; }
+.sh { flex: none; display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 0 14px; border-radius: 17px; background: var(--card); color: var(--ink); font-size: 14px; font-weight: 550; border: 1.5px solid transparent; }
+.sh i { width: 9px; height: 9px; border-radius: 50%; background: var(--c); }
+.sh.on { border-color: var(--c, var(--ink)); background: color-mix(in srgb, var(--c, var(--ink)) 14%, var(--card)); font-weight: 650; }
+.sh-note { margin: -2px 2px 0; font-size: 12px; color: var(--ink-2); }
+.zoom { display: inline-flex; gap: 2px; }
+.cal-tools { display: flex; align-items: center; gap: 8px; }
+.zoom button { width: 32px; height: 34px; border-radius: 10px; background: var(--card); color: var(--tint); font-size: 20px; line-height: 1; }
+.zoom button:disabled { color: var(--ink-3); }
+.rng { display: inline-flex; align-items: center; gap: 2px; }
+.rng button { width: 30px; height: 32px; font-size: 22px; color: var(--tint); }
+.rng strong { font-size: 17px; }
+.mdh { display: grid; position: sticky; top: 0; z-index: 4; background: var(--bg); padding: 2px 0; margin: 0 -4px; }
+.mdh button { display: flex; flex-direction: column; align-items: center; gap: 1px; min-height: 44px; justify-content: center; }
+.mdh span { font-size: 11px; color: var(--ink-2); }
+.mdh b { font-size: 17px; font-weight: 550; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; }
+.mdh .today b { background: var(--red); color: #fff; }
+.vl { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px solid var(--line); }
+.tl .slot { right: auto; }
+.lb-sh { position: absolute; top: 4px; right: 4px; width: 7px; height: 7px; border-radius: 50%; }
+.tl.multi .lb { padding: 2px 4px; border-left-width: 3px; }
+.tl.n3 .lb-name { font-size: 13px; }
+.tl.n7 .lb-name { font-size: 11px; font-weight: 600; text-overflow: clip; letter-spacing: -.02em; }
+.tl.n7 .lb-time { text-overflow: clip; }
+.tl.n7 .lb-time { font-size: 10px; }
+.tl.n7 .lb.tiny { flex-direction: column; align-items: flex-start; gap: 0; }
+.tl.n7 .lb-sh { top: 2px; right: 2px; width: 5px; height: 5px; }
+.now.part { right: auto; }
+.now.part::before { left: -4px; }
+.now.part span { display: none; }
+.sheet-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.sheet-row { display: flex; align-items: center; gap: 8px; }
+.sheet-row .input { flex: 1; }
+.danger-t { color: var(--red); }
+.cal-title { white-space: nowrap; }
