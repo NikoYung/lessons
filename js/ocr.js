@@ -28,7 +28,7 @@ function getWorker() {
           if (m.status === 'recognizing text') onProgress(m.progress);
         },
       });
-      await worker.setParameters({ tessedit_pageseg_mode: '6', preserve_interword_spaces: '1' });
+      await worker.setParameters({ tessedit_pageseg_mode: '11', preserve_interword_spaces: '1' });
       return worker;
     })().catch((e) => {
       workerPromise = null;
@@ -38,13 +38,16 @@ function getWorker() {
   return workerPromise;
 }
 
-/** Серый тон, инверсия тёмной темы, увеличение мелких картинок: так Tesseract ошибается реже. */
+/**
+ * Чёрно-белая картинка: всё, что заметно отличается от фона (самый частый тон), — чёрное.
+ * Так одинаково читаются тёмная тема, цветные блоки календаря и пузыри переписки.
+ */
 async function prepare(file) {
   const bitmap = await createImageBitmap(file);
-  const scale = bitmap.width < 1000 ? 2 : 1;
+  const scale = Math.min(2, Math.max(1, 1800 / bitmap.width));
   const canvas = document.createElement('canvas');
-  canvas.width = bitmap.width * scale;
-  canvas.height = bitmap.height * scale;
+  canvas.width = Math.round(bitmap.width * scale);
+  canvas.height = Math.round(bitmap.height * scale);
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
@@ -52,23 +55,24 @@ async function prepare(file) {
 
   const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const px = img.data;
-  let sum = 0;
+  const hist = new Uint32Array(256);
   for (let i = 0; i < px.length; i += 4) {
-    const y = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+    const y = (0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2]) | 0;
     px[i] = y;
-    sum += y;
+    hist[y]++;
   }
-  const dark = sum / (px.length / 4) < 110;
+  let bg = 0;
+  for (let v = 1; v < 256; v++) if (hist[v] > hist[bg]) bg = v;
   for (let i = 0; i < px.length; i += 4) {
-    const y = dark ? 255 - px[i] : px[i];
-    px[i] = px[i + 1] = px[i + 2] = y;
+    const v = Math.abs(px[i] - bg) > 60 ? 0 : 255;
+    px[i] = px[i + 1] = px[i + 2] = v;
     px[i + 3] = 255;
   }
   ctx.putImageData(img, 0, 0);
   return canvas;
 }
 
-/** @returns {{lines: {text: string, conf: number}[], text: string}} */
+/** @returns {{lines: {text: string, conf: number, box: {x0, y0, x1, y1}}[], text: string}} */
 export async function recognize(file, progress = () => {}) {
   onProgress = progress;
   const worker = await getWorker();
@@ -77,7 +81,7 @@ export async function recognize(file, progress = () => {}) {
   const lines = [];
   for (const b of data.blocks || []) {
     for (const p of b.paragraphs || []) {
-      for (const l of p.lines || []) lines.push({ text: l.text.trim(), conf: l.confidence });
+      for (const l of p.lines || []) lines.push({ text: l.text.trim(), conf: l.confidence, box: l.bbox });
     }
   }
   return { lines: lines.length ? lines : data.text.split('\n').map((text) => ({ text, conf: 100 })), text: data.text };

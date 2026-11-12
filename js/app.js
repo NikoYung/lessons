@@ -6,7 +6,7 @@ import {
   studentStats, balanceText, monthStats, totalDebt, extendSeries, seriesText, COLORS, nextColor, validateBackup,
   lessonStart, isBusy,
 } from './logic.js';
-import { interpret, findCommands, EXAMPLES, speechSupported, listen } from './voice.js';
+import { interpret, findCommands, findSchedule, EXAMPLES, speechSupported, listen } from './voice.js';
 import { recognize } from './ocr.js';
 import * as media from './media.js';
 
@@ -796,16 +796,23 @@ function ocrProgress(o) {
 
 function batchView(sh) {
   if (!sh.batch) return '';
-  if (!sh.batch.length) return '<section class="card vres err"><p>Команд в тексте не нашёл. Текст — в поле выше: можно поправить и нажать «Разобрать».</p></section>';
+  if (!sh.batch.length) {
+    return `<section class="card vres err"><p>${sh.text ? 'Уроков и команд в тексте не нашёл.' : 'Текста на картинке не нашёл.'}</p>
+      <p class="small mt">Подходят скриншоты календаря (видны время и имя ученика) и переписки («перенесём на 18», «перевела 3000»). Распознанный текст — в поле выше: можно поправить и нажать «Разобрать».</p></section>`;
+  }
   const n = sh.batch.filter((b) => b.on && b.result.kind === 'action').length;
+  const known = sh.batch.filter((b) => b.exists);
+  const rest = sh.batch.map((b, i) => ({ b, i })).filter(({ b }) => !b.exists);
+  const fresh = rest.filter(({ b }) => b.result.kind === 'action').length;
   return `
-    <h3 class="section-title mt">Нашёл в тексте</h3>
-    ${sh.batch.map((b, i) => (b.result.kind === 'answer'
+    <h3 class="section-title mt">Нашёл: ${[fresh ? `новое — ${fresh}` : '', known.length ? `уже в календаре — ${known.length}` : ''].filter(Boolean).join(', ') || 'только ответы'}</h3>
+    ${known.length ? `<section class="card vres"><p class="sub">Уже в календаре — ничего менять не надо</p><p class="small">${known.map((b) => esc(b.result.text.replace(' — уже в календаре', ''))).join('<br>')}</p></section>` : ''}
+    ${rest.map(({ b, i }) => (b.result.kind === 'answer'
     ? `<section class="card vres"><p class="sub">«${esc(b.text)}»</p><p class="answer">${esc(b.result.text)}</p></section>`
     : `<label class="card vres pick ${b.on ? '' : 'off'}"><input type="checkbox" data-bi="${i}" ${b.on ? 'checked' : ''}>
         <span><p class="sub">«${esc(b.text)}»</p><h3>${esc(b.result.title)}</h3>${b.result.lines.map((l) => `<p>${esc(l)}</p>`).join('')}
         ${b.result.warn?.length ? `<div class="warn-box mt">${b.result.warn.map(esc).join('<br>')}</div>` : ''}</span></label>`)).join('')}
-    ${n ? `<button class="btn primary" data-act="batch-apply">Применить (${n})</button>` : ''}`;
+    ${n ? `<button class="btn primary" data-act="batch-apply">Применить (${n})</button>` : fresh ? '<p class="note">Отметьте галочкой, что добавить.</p>' : '<p class="note">Новых уроков на картинке нет — всё уже в календаре.</p>'}`;
 }
 
 async function applyBatch() {
@@ -824,14 +831,28 @@ async function applyBatch() {
 let ocrUsed = false;
 async function ocrText(files, onState) {
   const parts = [];
+  const pages = [];
   for (let i = 0; i < files.length; i++) {
     const label = files.length > 1 ? `Распознаю текст: картинка ${i + 1} из ${files.length}` : 'Распознаю текст…';
     onState({ label, p: 0, first: !ocrUsed });
-    const { text } = await recognize(files[i], (p) => onState({ label, p, first: false }, true));
+    const { text, lines } = await recognize(files[i], (p) => onState({ label, p, first: false }, true));
     ocrUsed = true;
     parts.push(text.trim());
+    pages.push(lines.map((l) => ({ text: l.text, box: l.box })));
   }
-  return parts.join('\n\n');
+  return { text: parts.join('\n\n'), pages };
+}
+
+/** Уроки со скриншотов календаря + команды из переписки — одним списком с галочками. */
+function showFound(sh, text, pages) {
+  sh.text = text;
+  sh.result = null;
+  const ctx = voiceCtx();
+  const sched = pages.flatMap((lines) => findSchedule(lines, ctx, S.date).items);
+  const cmds = findCommands(text, ctx).items.filter((x) => x.result.kind === 'action');
+  // Если на картинке расписание, ответы-вопросы из текста не нужны.
+  sh.batch = [...sched, ...(sched.length ? cmds : findCommands(text, ctx).items)].map((x) => ({ ...x, on: x.on ?? x.result.kind === 'action' }));
+  renderSheet();
 }
 
 function ocrState(sh) {
@@ -848,11 +869,11 @@ async function ocrToVoice(files) {
   sh.result = null;
   sh.batch = null;
   try {
-    const text = await ocrText(files, ocrState(sh));
+    const { text, pages } = await ocrText(files, ocrState(sh));
     sh.ocr = null;
     if (S.sheet !== sh) return;
-    if (!text.trim()) { sh.batch = []; renderSheet(); return; }
-    runVoice(text);
+    if (!text.trim()) { sh.text = ''; sh.batch = []; renderSheet(); return; }
+    showFound(sh, text, pages);
   } catch (e) {
     sh.ocr = null;
     renderSheet();
@@ -919,9 +940,9 @@ async function ocrMedia() {
   const sh = S.sheet;
   const m = S.media.find((x) => x.id === sh.id);
   try {
-    const text = await ocrText([m.blob], ocrState(sh));
+    const { text, pages } = await ocrText([m.blob], ocrState(sh));
     sh.ocr = null;
-    await commit([{ put: ['media', { ...m, text: text.trim() || '(текст не найден)' }] }]);
+    await commit([{ put: ['media', { ...m, text: text.trim() || '(текст не найден)', lines: pages[0] || [] }] }]);
   } catch (e) {
     sh.ocr = null;
     renderSheet();
@@ -1125,7 +1146,6 @@ const ACTIONS = {
   export: () => exportBackup().catch((e) => alert(e.message)),
   voice: () => {
     openSheet({ type: 'voice', text: '', result: null, listening: false });
-    if (speechSupported()) startMic();
   },
   mic: () => startMic(),
   'mic-stop': () => { try { S.sheet.rec?.stop(); } catch { /* уже остановлено */ } },
@@ -1137,9 +1157,11 @@ const ACTIONS = {
   'media-open': (b) => openSheet({ type: 'media', id: b.dataset.id, full: true }, { push: true }),
   'media-ocr': () => ocrMedia(),
   'media-cmd': () => {
+    const m = S.media.find((x) => x.id === S.sheet.id);
     const text = $('[data-mtext]')?.value || '';
     openSheet({ type: 'voice', text, result: null, listening: false }, { push: true });
-    runVoice(text);
+    // Если текст не правили — используем и положение строк (для скриншотов календаря).
+    showFound(S.sheet, text, m?.lines && text === m.text ? [m.lines] : [text.split('\n')]);
   },
   'media-copy': async () => {
     try { await navigator.clipboard.writeText($('[data-mtext]')?.value || ''); toast('Скопировано'); } catch { toast('Не получилось скопировать'); }

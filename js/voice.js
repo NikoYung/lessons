@@ -787,6 +787,119 @@ export function findCommands(text, ctx) {
   return { clean, items: out };
 }
 
+/* ---------- Скриншот расписания/календаря → уроки ---------- */
+
+const MON_RE = /(\d{1,2})\s+(янв|фев|мар|апр|ма[яй]|июн|июл|авг|сен|окт|ноя|дек)[а-я]*\.?(?:\s+(\d{4}))?/i;
+const MON_KEYS = ['янв', 'фев', 'мар', 'апр', 'ма', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+const RANGE_RE = /(\d{1,2})[:.](\d{2})\s*[—–-]+\s*(\d{1,2})[:.](\d{2})/;
+const NOT_TITLE = /^(сегодня|завтра|вчера|январ|феврал|март|апрел|май|мая|июн|июл|август|сентябр|октябр|ноябр|декабр|понедельник|вторник|сред|четверг|пятниц|суббот|воскресен|расписание|все|календар|входящие)/i;
+
+const lineText = (l) => (typeof l === 'string' ? l : l.text || '');
+
+/**
+ * Ищет на скриншоте календаря/расписания уроки: «16:00 … Тимофей», «Саша © 17:00 — 18:00».
+ * lines — строки OCR (с box, если есть: время начала тогда считается по положению на экране) или просто строки текста.
+ * Возвращает [{text, result, on, exists}] в том же виде, что findCommands.
+ */
+export function findSchedule(lines, ctx, fallbackDate) {
+  const all = lines.map(lineText).join('\n');
+  const today = toISO(ctx.now);
+  // Дата из заголовка «Пятница — 13 нояб. 2026 г.»
+  let date = null;
+  const dm = all.match(MON_RE);
+  if (dm) {
+    const mon = MON_KEYS.findIndex((k) => dm[2].toLowerCase().startsWith(k));
+    const d = new Date(dm[3] ? Number(dm[3]) : ctx.now.getFullYear(), mon, Number(dm[1]));
+    if (d.getMonth() === mon) date = toISO(d);
+  }
+  if (!date) {
+    const wd = parseDates(normalize(all.split('\n').find((l) => WD_RE.test(` ${l.toLowerCase()} `)) || ''), today).dates[0];
+    date = wd?.iso || fallbackDate || today;
+  }
+
+  // Сетка часов по меткам «16:00» слева (только если есть координаты).
+  const grid = lines.filter((l) => l.box && /^\d{1,2}:00$/.test(lineText(l).trim())).map((l) => ({ y: (l.box.y0 + l.box.y1) / 2, h: Number(lineText(l).split(':')[0]) }));
+  let pxPerHour = 0;
+  if (grid.length >= 2) {
+    const a = grid[0];
+    const b = grid[grid.length - 1];
+    if (b.h !== a.h) pxPerHour = (b.y - a.y) / (b.h - a.h);
+  }
+  const timeAtY = (y) => {
+    if (!pxPerHour) return null;
+    const hours = grid[0].h + (y - grid[0].y) / pxPerHour;
+    return Math.max(0, Math.round(hours * 2) * 30); // по верху заголовка, с точностью до получаса
+  };
+
+  const items = [];
+  let lastHour = null;
+  let pending = null;
+  const sorted = lines.some((l) => l.box) ? [...lines].sort((p, q) => p.box.y0 - q.box.y0 || p.box.x0 - q.box.x0) : lines;
+  for (const l of sorted) {
+    const raw = lineText(l).trim();
+    if (!raw) continue;
+    const hourOnly = raw.match(/^(\d{1,2}):(\d{2})$/);
+    if (hourOnly) { lastHour = Number(hourOnly[1]) * 60 + Number(hourOnly[2]); continue; }
+    const range = raw.match(RANGE_RE);
+    const title = raw.replace(RANGE_RE, ' ').replace(/^[^A-Za-zА-Яа-яЁё]+/, '').replace(/[^A-Za-zА-Яа-яЁё'’\s-]+$/, '').trim();
+    if (/^[©@®]/.test(raw) || !title || title.length < 3 || NOT_TITLE.test(title) || MON_RE.test(raw)) {
+      // Строка только со временем «© 17:00 — 18:00» — уточняет предыдущее событие.
+      if (range && pending && !pending.ranged) {
+        pending.start = Number(range[1]) * 60 + Number(range[2]);
+        pending.end = Number(range[3]) * 60 + Number(range[4]);
+        pending.ranged = true;
+      }
+      continue;
+    }
+    const inline = raw.match(/(\d{1,2}):(\d{2})/);
+    let start = null;
+    let end = null;
+    if (range) { start = Number(range[1]) * 60 + Number(range[2]); end = Number(range[3]) * 60 + Number(range[4]); }
+    else if (inline && !l.box) start = Number(inline[1]) * 60 + Number(inline[2]);
+    else if (l.box) start = timeAtY(l.box.y0) ?? lastHour;
+    else start = lastHour;
+    pending = { title, start, end, ranged: Boolean(range) };
+    items.push(pending);
+  }
+
+  const out = [];
+  for (const it of items) {
+    if (it.start === null) continue;
+    const found = findStudents(normalize(it.title.replace(/['’`]\S*/g, ' ')), ctx.students)[0]; // «Diana's class» → Diana
+    const startT = fromMin(it.start);
+    if (found) {
+      const s = found.student;
+      const duration = it.end > it.start ? it.end - it.start : s.duration || ctx.settings.duration;
+      // Тот же урок, если время совпадает с точностью до 20 минут (по картинке время оценивается примерно).
+      const same = ctx.lessons.find((x) => x.studentId === s.id && x.date === date && x.status !== 'cancelled'
+        && Math.abs(toMin(x.start) - it.start) <= (it.ranged ? 0 : 20));
+      if (same) {
+        out.push({ text: it.title, exists: true, on: false, result: { kind: 'answer', text: `${s.name}, ${relDay(date, today)} в ${same.start} — уже в календаре` } });
+        continue;
+      }
+      const lesson = { id: uid(), studentId: s.id, date, start: startT, duration, status: 'planned', price: null, seriesId: null, note: '' };
+      // Есть урок этого ученика в тот же день, но в другое время — значит, перенос.
+      const other = ctx.lessons.find((x) => x.studentId === s.id && x.date === date && x.status !== 'cancelled');
+      const result = other
+        ? { kind: 'action', title: 'Другое время?', lines: [`${s.name}: ${relDay(date, today)} ${other.start} → ${startT}`], warn: conflictWarn({ ...other, start: startT, duration }, ctx, [other.id]), ops: [{ put: ['lessons', { ...other, start: startT, duration }] }], nav: { date } }
+        : { kind: 'action', title: 'Новый урок', lines: [`${s.name}: ${relDay(date, today)} в ${startT}, ${duration} мин`], warn: conflictWarn(lesson, ctx), ops: [{ put: ['lessons', lesson] }], nav: { date } };
+      out.push({ text: it.title, on: !other, result }); // перенос по картинке — только если отметить вручную
+    } else if (/^[А-ЯЁ][а-яё]{2,}(\s+[А-ЯЁа-яё][а-яё]{2,}){0,2}$/.test(it.title) && it.start >= 6 * 60) {
+      const student = {
+        id: uid(), kind: 'student', name: it.title, aliases: '', color: nextColor(ctx.students), duration: ctx.settings.duration,
+        prices: [{ from: '2000-01-01', price: 0 }], note: '', archived: false, createdAt: Date.now(),
+      };
+      const duration = it.end > it.start ? it.end - it.start : ctx.settings.duration;
+      const lesson = { id: uid(), studentId: student.id, date, start: startT, duration, status: 'planned', price: null, seriesId: null, note: '' };
+      out.push({
+        text: it.title, on: false,
+        result: { kind: 'action', title: 'Новый ученик?', lines: [`«${it.title}»: ${relDay(date, today)} в ${startT}, ${duration} мин`, 'Нет в списке учеников — отметьте, если это урок'], warn: [], ops: [{ put: ['students', student] }, { put: ['lessons', lesson] }], nav: { date } },
+      });
+    }
+  }
+  return { date, items: out };
+}
+
 export const EXAMPLES = [
   'Перенеси Машу с четверга на пятницу в 17',
   'Петя завтра на час позже',
