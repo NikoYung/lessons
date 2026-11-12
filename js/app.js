@@ -152,16 +152,17 @@ function calHeader() {
 /** Переключатель листов. Один лист — только его уроки; отметить ещё — листы совмещаются. */
 function sheetBar() {
   const list = sheets();
-  if (list.length < 2) return `<div class="sheets"><button class="sh" data-act="sheets-open">+ Лист</button></div>`;
+  if (list.length < 2) return `<div class="sheets"><button class="sh add" data-act="sheets-open">+ Лист</button></div>`;
   const ids = shownIds();
-  const all = allShown();
   return `
-    <div class="sheets" role="group" aria-label="Листы">
-      <button class="sh ${all ? 'on' : ''}" data-act="sheet-all">Все</button>
-      ${list.map((x) => `<button class="sh ${!all && ids.includes(x.id) ? 'on' : ''}" style="--c:${x.color}" data-act="sheet-tap" data-id="${x.id}"><i></i>${esc(x.name)}</button>`).join('')}
-      <button class="sh" data-act="sheets-open" aria-label="Настроить листы">⚙</button>
-    </div>
-    ${!all && ids.length > 1 ? `<p class="sh-note">Совмещено: ${ids.map((id) => esc(sheetById(id).name)).join(' + ')}</p>` : ''}`;
+    <div class="sheets" role="group" aria-label="Листы: какие показывать">
+      ${list.map((x) => {
+    const on = ids.includes(x.id);
+    return `<button class="sh ${on ? 'on' : ''}" style="--c:${x.color}" data-act="sheet-tap" data-id="${x.id}" aria-pressed="${on}"><i>${on ? '✓' : ''}</i>${esc(x.name)}</button>`;
+  }).join('')}
+      ${allShown() ? '' : '<button class="sh ghost" data-act="sheet-all">Все</button>'}
+      <button class="sh ghost gear" data-act="sheets-open" aria-label="Настроить листы">⚙</button>
+    </div>`;
 }
 
 function weekStrip() {
@@ -537,9 +538,30 @@ function render() {
     }
   }
   renderSheet();
+  animateView();
+}
+
+const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+const EASE = 'cubic-bezier(.2, .8, .2, 1)';
+/** Плавное появление после смены вкладки, вида, дня или листа. Обычные перерисовки — без анимации. */
+function animateView() {
+  const a = S.anim;
+  S.anim = null;
+  if (!a || reducedMotion()) return;
+  if (a === 'tab') {
+    $('#view').animate([{ opacity: 0, transform: 'translateY(8px)' }, { opacity: 1, transform: 'none' }], { duration: 260, easing: EASE });
+    return;
+  }
+  const dx = a === 'next' ? 22 : a === 'prev' ? -22 : 0;
+  const dy = a === 'fade' ? 6 : 0;
+  const sel = a === 'fade' ? '.tl, .mdh, .week, .mgrid, .day-sum, .list, .empty' : '.tl, .mdh, .mgrid, .day-sum, .list, .empty';
+  for (const el of document.querySelectorAll(sel.split(', ').map((x) => `#view ${x}`).join(', '))) {
+    el.animate([{ opacity: 0, transform: `translate(${dx}px, ${dy}px)` }, { opacity: 1, transform: 'none' }], { duration: 280, easing: EASE });
+  }
 }
 
 function go(iso) {
+  if (!S.anim) S.anim = iso > S.date ? 'next' : iso < S.date ? 'prev' : null;
   S.date = iso;
   S.scrollToNow = true;
 }
@@ -561,13 +583,27 @@ function closeSheet() {
 
 function renderSheet() {
   const root = $('#sheet-root');
-  if (!S.sheet) { root.innerHTML = ''; document.body.classList.remove('locked'); return; }
+  const ov = $('.overlay', root);
+  if (!S.sheet) {
+    document.body.classList.remove('locked');
+    root._sheet = null;
+    if (ov && !reducedMotion()) {
+      if (!ov.classList.contains('closing')) {
+        ov.classList.add('closing');
+        setTimeout(() => { if (!S.sheet) { root.innerHTML = ''; root.dataset.type = ''; } }, 260);
+      }
+    } else { root.innerHTML = ''; root.dataset.type = ''; }
+    return;
+  }
+  const fresh = !ov || ov.classList.contains('closing');
+  const swapped = !fresh && root._sheet !== S.sheet;
+  root._sheet = S.sheet;
   const fn = { sheets: (sh) => `${head('Листы')}${sheetsManager()}`, lesson: lessonSheet, student: studentSheet, studentEdit: studentEditSheet, payment: paymentSheet, series: seriesSheet, voice: voiceSheet, media: mediaSheet }[S.sheet.type];
   const prevScroll = $('.sheet', root)?.scrollTop || 0;
   const same = root.dataset.type === S.sheet.type;
   root.dataset.type = S.sheet.type;
-  root.innerHTML = `<div class="overlay" data-act="overlay"><div class="sheet ${S.sheet.full ? 'full' : ''}" role="dialog" aria-modal="true">${fn(S.sheet)}</div></div>`;
-  if (same) $('.sheet', root).scrollTop = prevScroll;
+  root.innerHTML = `<div class="overlay ${fresh ? 'enter' : ''}" data-act="overlay"><div class="sheet ${S.sheet.full ? 'full' : ''} ${swapped ? 'swap' : ''}" role="dialog" aria-modal="true">${fn(S.sheet)}</div></div>`;
+  if (same && !swapped && !fresh) $('.sheet', root).scrollTop = prevScroll;
   document.body.classList.add('locked');
 }
 
@@ -1163,12 +1199,12 @@ async function restoreBackup(file) {
 /* ---------- События ---------- */
 
 const ACTIONS = {
-  tab: (b) => { S.tab = b.dataset.tab; if (S.tab === 'cal') S.scrollToNow = true; $('#view').scrollTop = 0; render(); },
+  tab: (b) => { if (S.tab !== b.dataset.tab) S.anim = 'tab'; S.tab = b.dataset.tab; if (S.tab === 'cal') S.scrollToNow = true; $('#view').scrollTop = 0; render(); },
   close: () => closeSheet(),
   overlay: (b, e) => { if (e.target === b) closeSheet(); },
   undo: () => undo(),
-  'cal-mode': (b) => { S.calMode = b.dataset.mode; S.scrollToNow = true; saveView(); render(); },
-  'open-day': (b) => { S.calMode = 'day'; go(b.dataset.date); saveView(); render(); },
+  'cal-mode': (b) => { if (S.calMode !== b.dataset.mode) S.anim = 'fade'; S.calMode = b.dataset.mode; S.scrollToNow = true; saveView(); render(); },
+  'open-day': (b) => { S.anim = 'fade'; S.calMode = 'day'; go(b.dataset.date); saveView(); render(); },
   shift: (b) => { go(addDays(S.date, Number(b.dataset.d) * calDays().length)); render(); },
   zoom: (b) => setZoom(ZOOMS[Math.max(0, Math.min(ZOOMS.length - 1, nearestZoom(S.zoom) + Number(b.dataset.d)))]),
   'sheets-open': () => openSheet({ type: 'sheets' }),
@@ -1179,14 +1215,16 @@ const ACTIONS = {
     const c = [...COLORS.slice(from + 1), ...COLORS.slice(0, from + 1)].find((k) => !used.includes(k)) || x.color;
     await saveSheets(sheets().map((y) => (y.id === x.id ? { ...y, color: c } : y)));
   },
-  'sheet-all': () => { S.shown = null; saveView(); render(); },
+  'sheet-all': () => { S.shown = null; S.anim = 'fade'; saveView(); render(); },
   'sheet-tap': (b) => {
     const id = b.dataset.id;
     let ids = shownIds();
-    if (allShown()) ids = [id];
-    else if (ids.includes(id)) { if (ids.length > 1) ids = ids.filter((x) => x !== id); }
-    else ids = [...ids, id];
+    if (ids.includes(id)) {
+      if (ids.length === 1) { toast('Хотя бы один лист должен быть включён'); return; }
+      ids = ids.filter((x) => x !== id);
+    } else ids = [...ids, id];
     S.shown = ids.length === sheets().length ? null : ids;
+    S.anim = 'fade';
     saveView();
     render();
   },
@@ -1215,7 +1253,7 @@ const ACTIONS = {
     if (S.date === b.dataset.date) { S.calMode = 'day'; go(b.dataset.date); } else S.date = b.dataset.date;
     render();
   },
-  month: (b) => { S.date = `${shiftMonth(monthKey(S.date), Number(b.dataset.d))}-01`; render(); },
+  month: (b) => { S.anim = Number(b.dataset.d) > 0 ? 'next' : 'prev'; S.date = `${shiftMonth(monthKey(S.date), Number(b.dataset.d))}-01`; render(); },
   'money-month': (b) => { S.moneyMonth = shiftMonth(S.moneyMonth, Number(b.dataset.d)); render(); },
   slot: (b) => openSheet({ type: 'lesson', isNew: true, draft: newLessonDraft(b.dataset.date || S.date, `${pad(Number(b.dataset.h))}:00`, lastStudent()) }),
   'lesson-new': (b) => {
@@ -1490,7 +1528,7 @@ document.addEventListener('touchend', (e) => {
   const dir = dx < 0 ? 1 : -1;
   if (kind === 'day') go(addDays(S.date, dir * days));
   else if (kind === 'week') go(addDays(S.date, dir * 7));
-  else if (kind === 'month') S.date = `${shiftMonth(monthKey(S.date), dir)}-01`;
+  else if (kind === 'month') { S.anim = dir > 0 ? 'next' : 'prev'; S.date = `${shiftMonth(monthKey(S.date), dir)}-01`; }
   render();
 }, { passive: true });
 

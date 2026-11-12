@@ -218,11 +218,11 @@ h1, h2, h3, p { margin: 0; }
 
 /* Шторки */
 #sheet-root:empty { display: none; }
-.overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, .42); display: flex; align-items: flex-end; z-index: 10; animation: fade .18s ease-out; }
+.overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, .42); display: flex; align-items: flex-end; z-index: 10; }
 .sheet {
   background: var(--bg); width: 100%; max-width: 640px; margin: 0 auto; max-height: 94dvh; overflow-y: auto; overscroll-behavior: contain;
   border-radius: 14px 14px 0 0; padding: 8px 16px calc(env(safe-area-inset-bottom) + 18px);
-  display: flex; flex-direction: column; gap: 12px; animation: up .22s cubic-bezier(.2, .8, .2, 1);
+  display: flex; flex-direction: column; gap: 12px;
 }
 .sheet > * { flex-shrink: 0; }
 .sheet.full { height: 100dvh; max-height: 100dvh; border-radius: 0; padding-top: calc(env(safe-area-inset-top) + 6px); }
@@ -311,14 +311,7 @@ details div { padding: 3px 0; }
 .cal-seg { margin-top: 2px; }
 .sheets { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; padding: 2px 0; }
 .sheets::-webkit-scrollbar { display: none; }
-.sh { flex: none; display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 0 14px; border-radius: 17px; background: var(--card); color: var(--ink); font-size: 14px; font-weight: 550; border: 1.5px solid transparent; }
-.sh i { width: 9px; height: 9px; border-radius: 50%; background: var(--c); }
-.sh.on { border-color: var(--c, var(--ink)); background: color-mix(in srgb, var(--c, var(--ink)) 14%, var(--card)); font-weight: 650; }
-.sh-note { margin: -2px 2px 0; font-size: 12px; color: var(--ink-2); }
-.zoom { display: inline-flex; gap: 2px; }
 .cal-tools { display: flex; align-items: center; gap: 8px; }
-.zoom button { width: 32px; height: 34px; border-radius: 10px; background: var(--card); color: var(--tint); font-size: 20px; line-height: 1; }
-.zoom button:disabled { color: var(--ink-3); }
 .rng { display: inline-flex; align-items: center; gap: 2px; }
 .rng button { width: 30px; height: 32px; font-size: 22px; color: var(--tint); }
 .rng strong { font-size: 17px; }
@@ -347,3 +340,56 @@ details div { padding: 3px 0; }
 .cal-title { white-space: nowrap; }
 .sw { width: 26px; height: 26px; border-radius: 50%; flex: none; }
 .sheet-row .muted { white-space: nowrap; }
+
+/* Листы — переключатели: включён = залит цветом листа с галочкой */
+.sh { flex: none; display: inline-flex; align-items: center; gap: 7px; min-height: 36px; padding: 0 14px 0 10px; border-radius: 18px;
+  background: transparent; color: var(--ink-2); font-size: 14px; font-weight: 600; border: 1.5px solid var(--line);
+  transition: background-color .22s, color .22s, border-color .22s, transform .15s; }
+.sh i { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--c); display: grid; place-items: center;
+  font-size: 11px; font-style: normal; font-weight: 800; color: #fff; transition: background-color .22s; }
+.sh.on { background: var(--c); border-color: var(--c); color: #fff; }
+.sh.on i { background: rgba(255, 255, 255, .28); border-color: #fff; }
+.sh.ghost { padding: 0 14px; color: var(--tint); border-color: transparent; background: var(--card); }
+.sh.gear { padding: 0; width: 36px; justify-content: center; font-size: 17px; color: var(--ink-2); }
+.sh.add { color: var(--tint); }
+
+/* Масштаб */
+.cal-tools { gap: 6px; }
+.cal-tools .pill { padding: 0 12px; }
+.zoom { display: inline-flex; flex: none; background: var(--card); border-radius: 17px; overflow: hidden; }
+.zoom button { flex: none; width: 36px; height: 34px; padding: 0; display: grid; place-items: center; color: var(--tint);
+  font-size: 22px; font-weight: 500; line-height: 1; transition: background-color .15s, color .15s; }
+.zoom button + button { border-left: 1px solid var(--line); }
+.zoom button:active { background: var(--tint-soft); }
+.zoom button:disabled { color: var(--ink-3); }
+.cal-head { gap: 8px; }
+.cal-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* Анимации */
+.overlay.enter { animation: ov-in .24s ease-out; }
+.overlay.enter .sheet { animation: sheet-in .42s cubic-bezier(.16, 1, .3, 1); }
+.overlay.closing { animation: ov-out .26s ease-in forwards; pointer-events: none; }
+.overlay.closing .sheet { animation: sheet-out .26s cubic-bezier(.5, 0, .75, 0) forwards; }
+.sheet.swap > * { animation: swap-in .3s cubic-bezier(.2, .8, .2, 1) both; }
+.sheet.swap > *:nth-child(2) { animation-delay: .02s; }
+.sheet.swap > *:nth-child(3) { animation-delay: .04s; }
+.sheet.swap > *:nth-child(n+4) { animation-delay: .06s; }
+@keyframes ov-in { from { background: rgba(0, 0, 0, 0); } }
+@keyframes ov-out { to { background: rgba(0, 0, 0, 0); } }
+@keyframes sheet-in { from { transform: translateY(100%); } }
+@keyframes sheet-out { to { transform: translateY(100%); } }
+@keyframes swap-in { from { opacity: 0; transform: translateX(16px); } }
+.vres, .card.vres.pick { animation: pop-in .3s cubic-bezier(.2, .8, .2, 1) both; }
+@keyframes pop-in { from { opacity: 0; transform: translateY(6px) scale(.98); } }
+.vres.pick { transition: opacity .2s, transform .15s; }
+
+/* Нажатие — лёгкое «вдавливание» */
+:is(.btn, .pill, .icon-btn, .seg button, .chip, .srow, .ag, .mc, .wd, .lb, .ex, .mthumb, .mdh button, .days button, .colors button, .sw, #tabs button) {
+  transition: transform .16s cubic-bezier(.2, .8, .2, 1), background-color .2s, color .2s, box-shadow .2s, opacity .2s;
+}
+:is(.btn, .pill, .icon-btn, .chip, .srow, .ag, .ex, .mthumb, .days button, .sh, .sw):active { transform: scale(.96); }
+:is(.seg button, .mc, .wd, .mdh button, .colors button, #tabs button):active { transform: scale(.92); }
+.lb:active { transform: scale(.97); }
+.wd-n, .mc-n, .mdh b { transition: background-color .22s, color .22s; }
+#toast { transition: opacity .25s, transform .3s cubic-bezier(.2, .8, .2, 1); }
+.progress i { transition: width .3s ease-out; }
