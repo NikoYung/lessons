@@ -21,7 +21,7 @@
   --r: 14px;
 }
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #000000;
     --card: #1c1c1e;
     --card-2: #232326;
@@ -42,6 +42,26 @@
     --track: #2c2c30;
   }
 }
+:root[data-theme="dark"] {
+    --bg: #000000;
+    --card: #1c1c1e;
+    --card-2: #232326;
+    --line: #2f2f33;
+    --ink: #f4f4f6;
+    --ink-2: #9d9da4;
+    --ink-3: #5f5f66;
+    --red: #ff453a;
+    --tint: #0a84ff;
+    --tint-ink: #ffffff;
+    --tint-soft: #11294a;
+    --good: #32d26a;
+    --good-soft: #12321e;
+    --bad: #ff6961;
+    --bad-soft: #3a1716;
+    --warn: #f0b95a;
+    --warn-soft: #3a2f17;
+    --track: #2c2c30;
+  }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { margin: 0; height: 100%; }
@@ -90,7 +110,7 @@ h1, h2, h3, p { margin: 0; }
 .ti { font-size: 20px; line-height: 23px; }
 #tabs .fab {
   width: 54px; height: 54px; min-height: 0; margin: -6px auto 0; border-radius: 50%;
-  background: var(--tint); color: #fff; font-size: 25px; box-shadow: 0 4px 14px rgba(0, 122, 255, .35);
+  background: var(--tint); color: #fff; font-size: 25px; box-shadow: 0 4px 14px color-mix(in srgb, var(--tint) 40%, transparent);
 }
 
 /* Календарь */
@@ -379,7 +399,7 @@ details div { padding: 3px 0; }
 @keyframes sheet-in { from { transform: translateY(100%); } }
 @keyframes sheet-out { to { transform: translateY(100%); } }
 @keyframes swap-in { from { opacity: 0; transform: translateX(16px); } }
-.vres, .card.vres.pick { animation: pop-in .3s cubic-bezier(.2, .8, .2, 1) both; }
+.vres:not(.pick) { animation: pop-in .3s cubic-bezier(.2, .8, .2, 1) both; }
 @keyframes pop-in { from { opacity: 0; transform: translateY(6px) scale(.98); } }
 .vres.pick { transition: opacity .2s, transform .15s; }
 
@@ -398,3 +418,13 @@ details div { padding: 3px 0; }
   border-radius: 14px; padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; font-size: 14px; box-shadow: 0 8px 24px rgba(0,0,0,.3); }
 #crash button { background: #fff; color: #d4302a; font-weight: 700; border-radius: 10px; min-height: 40px; margin-top: 4px; }
 .center { text-align: center; }
+
+/* Оформление */
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+.accents { flex-wrap: wrap; }
+.accents button { box-shadow: 0 0 0 2px var(--card); transition: transform .15s, box-shadow .2s; }
+.accents button.on { box-shadow: 0 0 0 2px var(--card), 0 0 0 4px var(--ink); }
+.accents .std { background: conic-gradient(#007aff 0 50%, #ff3b30 50% 100%); }
+body { transition: background-color .3s, color .3s; }
+.batch.pop .vres { animation: pop-in .3s cubic-bezier(.2, .8, .2, 1) both; }

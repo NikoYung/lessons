@@ -6,11 +6,11 @@ import {
   studentStats, balanceText, monthStats, totalDebt, extendSeries, seriesText, COLORS, nextColor, validateBackup,
   lessonStart, isBusy,
 } from './logic.js';
-import { interpret, findCommands, findSchedule, EXAMPLES, speechSupported, listen } from './voice.js';
+import { interpret, findCommands, findSchedule, findTimetable, EXAMPLES, speechSupported, listen } from './voice.js';
 import { recognize } from './ocr.js';
 import * as media from './media.js';
 
-const APP_VERSION = 'v11';
+const APP_VERSION = 'v12';
 const ZOOMS = [28, 36, 46, 60, 76, 96, 124];
 const BACKUP_REMIND_DAYS = 30;
 const DEFAULT_SHEETS = [
@@ -490,6 +490,14 @@ function moreView() {
       </div>
     </section>
     <section class="card">${sheetsManager()}</section>
+    <section class="card">
+      <h2 class="section-title">Оформление</h2>
+      <div class="field">Тема<div class="seg">${[['auto', 'Как в телефоне'], ['light', 'Светлая'], ['dark', 'Тёмная']].map(([k, t]) => `<button class="${(st.theme || 'auto') === k ? 'on' : ''}" data-act="theme" data-v="${k}">${t}</button>`).join('')}</div></div>
+      <div class="field mt">Цвет кнопок и календаря<div class="colors accents">
+        <button class="${st.accent ? '' : 'on'} std" data-act="accent" data-v="" aria-label="Стандартный"><i></i></button>
+        ${ACCENTS.map((c) => `<button class="${st.accent === c ? 'on' : ''}" style="background:${c}" data-act="accent" data-v="${c}" aria-label="Цвет"></button>`).join('')}
+      </div></div>
+    </section>
     <section class="card">
       <h2 class="section-title">Уроки</h2>
       ${(() => {
@@ -974,15 +982,20 @@ function batchView(sh) {
   const dates = (sh.dates || []).map((d, i) => (d ? `
     <label class="field">${sh.dates.filter(Boolean).length > 1 ? `Дата на картинке ${i + 1}` : 'Дата на картинке'} — проверьте
       <input class="input" type="date" value="${d}" data-change="sched-date" data-page="${i}"></label>` : '')).join('');
-  return `
-    <h3 class="section-title mt">Нашёл: ${[fresh ? `новое — ${fresh}` : '', known ? `уже есть — ${known}` : ''].filter(Boolean).join(', ') || 'только ответы'}</h3>
+  const pop = sh.popBatch ? 'pop' : '';
+  sh.popBatch = false;
+  const tt = sh.timetable;
+  return `<div class="batch ${pop}">
+    ${tt ? `<h3 class="section-title mt">Расписание: ${lessonsWord(tt.lessons)} в неделю, классов — ${tt.classes}</h3>
+      <p class="note">Каждый класс — отдельная строка на листе «${esc(sheetById(tt.sheet)?.name || '')}», уроки повторяются каждую неделю. В деньгах не считаются.${S.students.some((s) => /^школа$/i.test(s.name)) ? ' Общий блок «Школа» можно убрать в его карточке, если он больше не нужен.' : ''}</p>`
+    : `<h3 class="section-title mt">Нашёл: ${[fresh ? `новое — ${fresh}` : '', known ? `уже есть — ${known}` : ''].filter(Boolean).join(', ') || 'только ответы'}</h3>`}
     ${dates}
     ${acts.length > 1 ? `<button class="btn" data-act="batch-all">${allOn ? 'Снять все' : `Выбрать все (${acts.length})`}</button>` : ''}
     ${sh.batch.map((b, i) => ({ b, i })).map(({ b, i }) => (b.result.kind === 'answer'
     ? `<section class="card vres"><p class="sub">«${esc(b.text)}»</p><p class="answer">${esc(b.result.text)}</p></section>`
     : `<label class="card vres pick ${b.on ? '' : 'off'}"><input type="checkbox" data-bi="${i}" ${b.on ? 'checked' : ''}>
-        <span><p class="sub">«${esc(b.text)}»</p><h3>${esc(b.result.title)}</h3>${b.result.lines.map((l) => `<p>${esc(l)}</p>`).join('')}
-        ${b.result.warn?.length ? `<div class="warn-box mt">${b.result.warn.map(esc).join('<br>')}</div>` : ''}</span></label>`)).join('')}
+        <span>${tt ? '' : `<p class="sub">«${esc(b.text)}»</p>`}<h3>${esc(b.result.title)}</h3>${b.result.lines.map((l) => `<p>${esc(l)}</p>`).join('')}
+        ${b.result.warn?.length ? `<div class="warn-box mt">${b.result.warn.map(esc).join('<br>')}</div>` : ''}</span></label>`)).join('')}</div>
     ${n ? `<button class="btn primary" data-act="batch-apply">Применить (${n})</button>` : '<p class="note">Отметьте галочкой, что добавить, или «Выбрать все».</p>'}`;
 }
 
@@ -993,8 +1006,21 @@ async function applyBatch() {
   // Если две команды меняют один урок — в итоге остаётся последняя.
   const ops = picked.flatMap((b) => b.result.ops);
   const nav = picked.find((b) => b.result.nav?.date)?.result.nav;
+  const tt = sh.timetable;
   closeSheet();
   if (nav) { S.tab = 'cal'; go(nav.date); }
+  if (tt) {
+    // Показываем неделю с листом школы.
+    S.tab = 'cal';
+    S.calMode = 'week';
+    if (!shownIds().includes(tt.sheet)) S.shown = [...shownIds(), tt.sheet];
+    if (S.shown?.length === sheets().length) S.shown = null;
+    S.anim = 'fade';
+    S.scrollToNow = true;
+    saveView();
+    await commit(ops, `Расписание добавлено: ${plural(picked.length, 'класс', 'класса', 'классов').replace(/^/, `${picked.length} `)}`);
+    return;
+  }
   await commit(ops, picked.length === 1 ? picked[0].result.title : `Применено: ${picked.length}`);
 }
 
@@ -1021,6 +1047,18 @@ function showFound(sh, text, pages) {
   sh.pages = pages;
   sh.pageDates = sh.pageDates || [];
   const ctx = voiceCtx();
+  sh.popBatch = true;
+  // Школьное расписание (дни недели, «08:50–09:30», классы) — отдельный разбор: классы и уроки каждую неделю.
+  const schoolSheet = sheets().find((x) => /школ/i.test(x.name))?.id || activeSheet() || defaultSheet();
+  const tt = findTimetable(pages, { ...ctx, schoolSheet });
+  if (tt.lessons.length >= 3) {
+    sh.dates = [];
+    sh.timetable = { lessons: tt.lessons.length, classes: tt.items.length, sheet: schoolSheet };
+    sh.batch = tt.items;
+    renderSheet();
+    return;
+  }
+  sh.timetable = null;
   const found = pages.map((lines, i) => findSchedule(lines, ctx, S.date, sh.pageDates[i]));
   // Дату показываем, только если на картинке нашлись уроки, — её можно поправить.
   sh.dates = found.map((f) => (f.items.length ? f.date : null));
@@ -1233,6 +1271,8 @@ const ACTIONS = {
   shift: (b) => { go(addDays(S.date, Number(b.dataset.d) * calDays().length)); render(); },
   zoom: (b) => setZoom(ZOOMS[Math.max(0, Math.min(ZOOMS.length - 1, nearestZoom(S.zoom) + Number(b.dataset.d)))]),
   'sheets-open': () => openSheet({ type: 'sheets' }),
+  theme: (b) => saveLook({ theme: b.dataset.v }),
+  accent: (b) => saveLook({ accent: b.dataset.v }),
   'lessons-wipe': () => wipeLessons(),
   'hard-reload': () => globalThis.__hardReload?.(),
   'sheet-color': async (b) => {
@@ -1438,6 +1478,31 @@ async function wipeLessons() {
   await commit(ops, `Удалено: ${lessonsWord(ls.length)}`);
 }
 
+const ACCENTS = ['#007aff', '#ff3b30', '#ff9500', '#34c759', '#00c7be', '#5856d6', '#af52de', '#ff2d55', '#a2845e', '#8e8e93'];
+/** Тема и цвет: data-theme на <html>, акцент — переменные --tint и --red. */
+function applyTheme() {
+  const st = S.settings;
+  const el = document.documentElement;
+  if (st.theme === 'light' || st.theme === 'dark') el.dataset.theme = st.theme;
+  else delete el.dataset.theme;
+  if (st.accent) {
+    el.style.setProperty('--tint', st.accent);
+    el.style.setProperty('--red', st.accent);
+    el.style.setProperty('--tint-soft', `color-mix(in srgb, ${st.accent} 16%, var(--card))`);
+  } else for (const k of ['--tint', '--red', '--tint-soft']) el.style.removeProperty(k);
+  // Цвет полосы статуса iPhone — под фон.
+  requestAnimationFrame(() => {
+    const bg = getComputedStyle(document.body).backgroundColor;
+    for (const m of document.querySelectorAll('meta[name="theme-color"]')) m.setAttribute('content', bg);
+  });
+}
+async function saveLook(patch) {
+  S.settings = { ...S.settings, ...patch };
+  applyTheme();
+  await db.setMeta('settings', S.settings);
+  render();
+}
+
 async function saveSheets(list) {
   S.settings = { ...S.settings, sheets: list };
   await db.setMeta('settings', S.settings);
@@ -1624,6 +1689,7 @@ async function start() {
   await loadAll();
   await extendAllSeries();
   await initSheets();
+  applyTheme();
   render();
   // Обновляем линию «сейчас» и смену дня.
   let lastDay = today();

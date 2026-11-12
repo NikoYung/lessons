@@ -945,3 +945,176 @@ export function listen({ onText, onEnd, onError }) {
 }
 
 export { plural };
+
+/* ---------- Школьное расписание: «Вторник / 09:50–10:30 / 5Г Англ. яз. 2 гр.» → классы и уроки каждую неделю ---------- */
+
+const WD_HEAD = [/^понедел/, /^вторн/, /^сред/, /^четв/, /^пятн/, /^субб/, /^воскр/];
+const TT_TIME = /([0-9OОЗSB]{1,2})\s*[:.;,]?\s*([0-9OОЗSB]{2})\s*[-–—~]+\s*([0-9OОЗSB]{1,2})\s*[:.;,]?\s*([0-9OОЗSB]{2})/;
+const digitFix = (s) => s.replace(/[OО]/g, '0').replace(/З/g, '3').replace(/S/g, '5').replace(/B/g, '8');
+
+/** В мелком шрифте 3 и 5 путаются, 0 читается как 9 или 8. Урок идёт 40 минут (или 20) — подбираем исправление. */
+function fixRange(a, b, c, d, knownStarts) {
+  const variants = (hh, mm) => {
+    const str = `${String(hh).padStart(2, '0')}${mm}`;
+    const out = new Set([str]);
+    const swap = { 3: ['5'], 5: ['3'], 9: ['0'], 8: ['0'], 0: ['8'] };
+    for (let i = 0; i < str.length; i++) {
+      for (const r of swap[str[i]] || []) out.add(str.slice(0, i) + r + str.slice(i + 1));
+    }
+    return [...out].map((t) => Number(t.slice(0, 2)) * 60 + Number(t.slice(2))).filter((m) => m >= 7 * 60 && m <= 21 * 60 && m % 5 === 0);
+  };
+  const S = variants(a, b);
+  const E = variants(c, d);
+  let best = null;
+  for (const s of S) {
+    for (const e of E) {
+      const dur = e - s;
+      if (![20, 30, 35, 40, 45].includes(dur)) continue;
+      // меньше правок и знакомое время начала — лучше
+      const score = (s === S[0] ? 0 : 1) + (e === E[0] ? 0 : 1) + (dur === 40 ? 0 : 0.6) - (knownStarts.has(s) ? 0.8 : 0);
+      if (!best || score < best.score) best = { s, e, score };
+    }
+  }
+  return best;
+}
+
+const CLASS_LETTER = {
+  6: 'Б', b: 'Б', Ь: 'Б', ь: 'Б', б: 'Б', Б: 'Б',
+  r: 'Г', г: 'Г', F: 'Г', f: 'Г', T: 'Г', Г: 'Г',
+  B: 'В', в: 'В', В: 'В', A: 'А', a: 'А', а: 'А', А: 'А', E: 'Е', e: 'Е', е: 'Е', Е: 'Е',
+  D: 'Д', д: 'Д', Д: 'Д', 0: 'Д', O: 'Д', О: 'Д', K: 'К', к: 'К', К: 'К', и: 'И', И: 'И', Ж: 'Ж', ж: 'Ж', Л: 'Л', л: 'Л', M: 'М', м: 'М', М: 'М', H: 'Н', н: 'Н', Н: 'Н',
+};
+
+/** «66» → 6Б, «Sr» → 5Г, «IE» → 3Е, «2B» → 2В */
+function fixClass(tok) {
+  let t = (tok || '').replace(/[^0-9A-Za-zА-Яа-яЁё]/g, '');
+  if (!t || t.length > 3) return null;
+  const head = { S: '5', s: '5', З: '3', з: '3', I: '3', l: '3', J: '3', O: '0', О: '0' };
+  if (head[t[0]]) t = head[t[0]] + t.slice(1);
+  const m = t.match(/^(\d{1,2}?)(\d|[A-Za-zА-Яа-яЁё])$/);
+  if (!m) return null;
+  const letter = CLASS_LETTER[m[2]];
+  const num = Number(m[1]);
+  if (!letter || !(num >= 1 && num <= 11)) return null;
+  return `${num}${letter}`;
+}
+
+const GROUP_RE = /^[‚,.\s]*([12])\s*гр/i;
+
+/**
+ * pages — строки OCR по каждой картинке. Ищет дни недели, «08:50–09:30» и класс под временем.
+ * Одно и то же место расписания часто видно на нескольких скриншотах — голосуем.
+ */
+export function findTimetable(pages, ctx) {
+  const raw = [];
+  for (const lines of pages) {
+    let wd = null;
+    let time = null;
+    const list = lines.map(lineText).map((t) => t.trim()).filter(Boolean);
+    for (let i = 0; i < list.length; i++) {
+      const t = list[i];
+      const low = t.toLowerCase().replace(/[^а-яё]/g, '');
+      const head = WD_HEAD.findIndex((r) => r.test(low));
+      if (head >= 0 && low.length <= 12) { wd = head; time = null; continue; }
+      const tm = digitFix(t).match(TT_TIME);
+      if (tm) { time = { a: tm[1], b: tm[2], c: tm[3], d: tm[4] }; continue; }
+      if (!time || GROUP_RE.test(t)) continue;
+      // «7  6Б Англ. яз. 1 ГР» — номер урока впереди убираем
+      const words = t.replace(/^[\d/|\\@©®°]{1,2}\s+(?=\S{1,3}(\s|$))/, '').split(/\s+/);
+      if (words.length === 1 && /^[\d/|\\@©®°]{1,2}$/.test(words[0])) continue; // только номер урока
+      const cls = fixClass(words[0]);
+      let subject = words.slice(1).join(' ');
+      let group = (t.match(/([12])\s*гр/i) || [])[1];
+      const next = list[i + 1] || '';
+      if (!group && GROUP_RE.test(next)) group = next.match(GROUP_RE)[1];
+      if (!/[а-я]{3}/i.test(subject) && next && !TT_TIME.test(digitFix(next)) && !GROUP_RE.test(next) && /[а-я]{3}/i.test(next)) subject = next;
+      subject = subject.replace(/[‚]/g, ' ').replace(/\s*[12]?\s*гр[а-я.]*\s*$/i, '').replace(/^англ\S*\s*\S*/i, 'Англ. яз.').replace(/\s+/g, ' ').trim();
+      raw.push({ wd, time, cls, subject, group });
+      time = null;
+    }
+  }
+  // Время начала, прочитанное без ошибок, — это «звонки»; по ним исправляем остальное.
+  const known = new Set();
+  for (const r of raw) {
+    const s = Number(r.time.a) * 60 + Number(r.time.b);
+    const e = Number(r.time.c) * 60 + Number(r.time.d);
+    if (e - s === 40 && s >= 7 * 60) known.add(s); // 20-минутное чтение может быть ошибкой 3↔5
+  }
+  const slots = new Map(); // «день|начало» → все прочтения
+  const loose = [];
+  for (const r of raw) {
+    const f = fixRange(r.time.a, r.time.b, r.time.c, r.time.d, known);
+    if (!f) continue;
+    const item = { ...r, start: f.s, end: f.e };
+    if (r.wd === null) { loose.push(item); continue; }
+    const key = `${r.wd}|${f.s}`;
+    if (!slots.has(key)) slots.set(key, []);
+    slots.get(key).push(item);
+  }
+  // Начало скриншота без заголовка дня — только подтверждает уже найденное.
+  for (const it of loose) {
+    for (const [key, arr] of slots) if (key.endsWith(`|${it.start}`) && it.cls && arr.some((x) => x.cls === it.cls)) arr.push(it);
+  }
+  const lessons = [];
+  for (const arr of slots.values()) {
+    const votes = new Map();
+    for (const x of arr) if (x.cls) votes.set(x.cls, (votes.get(x.cls) || 0) + 1);
+    const cls = [...votes.entries()].sort((p, q) => q[1] - p[1])[0]?.[0];
+    if (!cls) continue;
+    const ends = new Map();
+    for (const x of arr) ends.set(x.end, (ends.get(x.end) || 0) + 1);
+    const end = [...ends.entries()].sort((p, q) => q[1] - p[1])[0][0];
+    const pick = (k) => arr.map((x) => x[k]).filter(Boolean).sort((p, q) => q.length - p.length)[0] || '';
+    lessons.push({ wd: arr[0].wd, start: arr[0].start, end, cls, subject: pick('subject'), group: pick('group') });
+  }
+  lessons.sort((p, q) => p.wd - q.wd || p.start - q.start);
+  return { lessons, items: timetableItems(lessons, ctx) };
+}
+
+/** Классы → ученики на листе «Школа» (в деньгах не считаются), уроки — каждую неделю. */
+function timetableItems(lessons, ctx) {
+  const today = toISO(ctx.now);
+  const byClass = new Map();
+  for (const l of lessons) {
+    if (!byClass.has(l.cls)) byClass.set(l.cls, []);
+    byClass.get(l.cls).push(l);
+  }
+  const out = [];
+  const used = [...ctx.students];
+  const order = [...byClass.keys()].sort((p, q) => p.localeCompare(q, 'ru', { numeric: true }));
+  for (const cls of order) {
+    const ls = byClass.get(cls);
+    let stu = ctx.students.find((s) => s.name.replace(/\s/g, '').toUpperCase() === cls);
+    const ops = [];
+    const isNew = !stu;
+    if (isNew) {
+      stu = { id: uid(), kind: 'busy', sheet: ctx.schoolSheet, name: cls, aliases: '', color: nextColor(used), duration: 40, prices: [{ from: '2000-01-01', price: 0 }], note: '', archived: false, createdAt: Date.now() };
+      used.push(stu);
+      ops.push({ put: ['students', stu] });
+    }
+    // Одинаковое время и предмет в разные дни — одно расписание на несколько дней.
+    const groups = new Map();
+    for (const l of ls) {
+      const note = [l.subject, l.group ? `${l.group} гр.` : ''].filter(Boolean).join(', ');
+      const k = `${l.start}|${l.end}|${note}`;
+      if (!groups.has(k)) groups.set(k, { start: l.start, end: l.end, note, days: [] });
+      groups.get(k).days.push(l.wd);
+    }
+    const lines = [];
+    let fresh = 0;
+    for (const g of groups.values()) {
+      const has = ctx.series.some((x) => x.studentId === stu.id && x.start === fromMin(g.start) && g.days.every((d) => x.days.includes(d)) && (!x.until || x.until >= today));
+      lines.push(`${g.days.map((d) => WD_SHORT[d].toLowerCase()).join(', ')} ${fromMin(g.start)}–${fromMin(g.end)}${g.note ? ` · ${g.note}` : ''}${has ? ' — уже есть' : ''}`);
+      if (has) continue;
+      fresh++;
+      const series = { id: uid(), studentId: stu.id, sheet: ctx.schoolSheet, days: [...g.days].sort(), start: fromMin(g.start), duration: g.end - g.start, from: today, until: null, generatedUntil: null, note: g.note };
+      const ext = extendSeries(series, today);
+      ops.push({ put: ['series', ext.series] }, ...ext.lessons.map((l) => ({ put: ['lessons', l] })));
+    }
+    out.push({
+      text: cls, exists: !fresh, on: Boolean(fresh),
+      result: { kind: 'action', title: `${cls}${isNew ? ' · новый класс' : ''}`, lines, warn: [], ops: fresh ? ops : [], nav: null },
+    });
+  }
+  return out;
+}
