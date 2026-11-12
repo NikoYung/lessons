@@ -2,7 +2,7 @@
 // Разбор целиком на устройстве, без сети и без ИИ — по правилам русской речи.
 import {
   addDays, startOfWeek, weekday, toISO, fromISO, toMin, fromMin, statusOf, sortLessons, lessonStart, lessonEnd,
-  conflicts, priceAt, withPrice, uid, extendSeries, studentStats, balanceText, formatRub, relDay, WD_SHORT,
+  conflicts, priceAt, withPrice, uid, extendSeries, studentStats, balanceText, formatRub, relDay, dayTitle, WD_SHORT,
   nextColor, lessonsWord, plural,
 } from './logic.js';
 
@@ -801,7 +801,7 @@ const lineText = (l) => (typeof l === 'string' ? l : l.text || '');
  * lines — строки OCR (с box, если есть: время начала тогда считается по положению на экране) или просто строки текста.
  * Возвращает [{text, result, on, exists}] в том же виде, что findCommands.
  */
-export function findSchedule(lines, ctx, fallbackDate) {
+export function findSchedule(lines, ctx, fallbackDate, forceDate) {
   const all = lines.map(lineText).join('\n');
   const today = toISO(ctx.now);
   // Дата из заголовка «Пятница — 13 нояб. 2026 г.»
@@ -812,6 +812,7 @@ export function findSchedule(lines, ctx, fallbackDate) {
     const d = new Date(dm[3] ? Number(dm[3]) : ctx.now.getFullYear(), mon, Number(dm[1]));
     if (d.getMonth() === mon) date = toISO(d);
   }
+  if (forceDate) date = forceDate;
   if (!date) {
     const wd = parseDates(normalize(all.split('\n').find((l) => WD_RE.test(` ${l.toLowerCase()} `)) || ''), today).dates[0];
     date = wd?.iso || fallbackDate || today;
@@ -863,6 +864,7 @@ export function findSchedule(lines, ctx, fallbackDate) {
   }
 
   const out = [];
+  const when = (t) => `${dayTitle(date)} в ${t}`;
   for (const it of items) {
     if (it.start === null) continue;
     const found = findStudents(normalize(it.title.replace(/['’`]\S*/g, ' ')), ctx.students)[0]; // «Diana's class» → Diana
@@ -873,16 +875,17 @@ export function findSchedule(lines, ctx, fallbackDate) {
       // Тот же урок, если время совпадает с точностью до 20 минут (по картинке время оценивается примерно).
       const same = ctx.lessons.find((x) => x.studentId === s.id && x.date === date && x.status !== 'cancelled'
         && Math.abs(toMin(x.start) - it.start) <= (it.ranged ? 0 : 20));
+      const lesson = { id: uid(), studentId: s.id, date, start: startT, duration, status: 'planned', price: null, seriesId: null, note: '' };
       if (same) {
-        out.push({ text: it.title, exists: true, on: false, result: { kind: 'answer', text: `${s.name}, ${relDay(date, today)} в ${same.start} — уже в календаре` } });
+        // Отмечать не нужно, но если в приложении его всё-таки нет — можно добавить галочкой.
+        out.push({ text: it.title, exists: true, on: false, result: { kind: 'action', title: 'Уже есть в календаре', lines: [`${s.name}: ${when(same.start)}`], warn: [], ops: [{ put: ['lessons', lesson] }], nav: { date } } });
         continue;
       }
-      const lesson = { id: uid(), studentId: s.id, date, start: startT, duration, status: 'planned', price: null, seriesId: null, note: '' };
       // Есть урок этого ученика в тот же день, но в другое время — значит, перенос.
       const other = ctx.lessons.find((x) => x.studentId === s.id && x.date === date && x.status !== 'cancelled');
       const result = other
-        ? { kind: 'action', title: 'Другое время?', lines: [`${s.name}: ${relDay(date, today)} ${other.start} → ${startT}`], warn: conflictWarn({ ...other, start: startT, duration }, ctx, [other.id]), ops: [{ put: ['lessons', { ...other, start: startT, duration }] }], nav: { date } }
-        : { kind: 'action', title: 'Новый урок', lines: [`${s.name}: ${relDay(date, today)} в ${startT}, ${duration} мин`], warn: conflictWarn(lesson, ctx), ops: [{ put: ['lessons', lesson] }], nav: { date } };
+        ? { kind: 'action', title: 'Другое время?', lines: [`${s.name}: ${dayTitle(date)}, ${other.start} → ${startT}`], warn: conflictWarn({ ...other, start: startT, duration }, ctx, [other.id]), ops: [{ put: ['lessons', { ...other, start: startT, duration }] }], nav: { date } }
+        : { kind: 'action', title: 'Новый урок', lines: [`${s.name}: ${when(startT)}, ${duration} мин`], warn: conflictWarn(lesson, ctx), ops: [{ put: ['lessons', lesson] }], nav: { date } };
       out.push({ text: it.title, on: !other, result }); // перенос по картинке — только если отметить вручную
     } else if (/^[А-ЯЁ][а-яё]{2,}(\s+[А-ЯЁа-яё][а-яё]{2,}){0,2}$/.test(it.title) && it.start >= 6 * 60) {
       const student = {
@@ -893,7 +896,7 @@ export function findSchedule(lines, ctx, fallbackDate) {
       const lesson = { id: uid(), studentId: student.id, date, start: startT, duration, status: 'planned', price: null, seriesId: null, note: '' };
       out.push({
         text: it.title, on: false,
-        result: { kind: 'action', title: 'Новый ученик?', lines: [`«${it.title}»: ${relDay(date, today)} в ${startT}, ${duration} мин`, 'Нет в списке учеников — отметьте, если это урок'], warn: [], ops: [{ put: ['students', student] }, { put: ['lessons', lesson] }], nav: { date } },
+        result: { kind: 'action', title: 'Новый ученик?', lines: [`«${it.title}»: ${when(startT)}, ${duration} мин`, 'Нет в списке учеников — отметьте, если это урок'], warn: [], ops: [{ put: ['students', student] }, { put: ['lessons', lesson] }], nav: { date } },
       });
     }
   }

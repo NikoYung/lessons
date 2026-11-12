@@ -801,18 +801,23 @@ function batchView(sh) {
       <p class="small mt">Подходят скриншоты календаря (видны время и имя ученика) и переписки («перенесём на 18», «перевела 3000»). Распознанный текст — в поле выше: можно поправить и нажать «Разобрать».</p></section>`;
   }
   const n = sh.batch.filter((b) => b.on && b.result.kind === 'action').length;
-  const known = sh.batch.filter((b) => b.exists);
-  const rest = sh.batch.map((b, i) => ({ b, i })).filter(({ b }) => !b.exists);
-  const fresh = rest.filter(({ b }) => b.result.kind === 'action').length;
+  const acts = sh.batch.filter((b) => b.result.kind === 'action');
+  const known = acts.filter((b) => b.exists).length;
+  const fresh = acts.length - known;
+  const allOn = acts.length && acts.every((b) => b.on);
+  const dates = (sh.dates || []).map((d, i) => (d ? `
+    <label class="field">${sh.dates.filter(Boolean).length > 1 ? `Дата на картинке ${i + 1}` : 'Дата на картинке'} — проверьте
+      <input class="input" type="date" value="${d}" data-change="sched-date" data-page="${i}"></label>` : '')).join('');
   return `
-    <h3 class="section-title mt">Нашёл: ${[fresh ? `новое — ${fresh}` : '', known.length ? `уже в календаре — ${known.length}` : ''].filter(Boolean).join(', ') || 'только ответы'}</h3>
-    ${known.length ? `<section class="card vres"><p class="sub">Уже в календаре — ничего менять не надо</p><p class="small">${known.map((b) => esc(b.result.text.replace(' — уже в календаре', ''))).join('<br>')}</p></section>` : ''}
-    ${rest.map(({ b, i }) => (b.result.kind === 'answer'
+    <h3 class="section-title mt">Нашёл: ${[fresh ? `новое — ${fresh}` : '', known ? `уже есть — ${known}` : ''].filter(Boolean).join(', ') || 'только ответы'}</h3>
+    ${dates}
+    ${acts.length > 1 ? `<button class="btn" data-act="batch-all">${allOn ? 'Снять все' : `Выбрать все (${acts.length})`}</button>` : ''}
+    ${sh.batch.map((b, i) => ({ b, i })).map(({ b, i }) => (b.result.kind === 'answer'
     ? `<section class="card vres"><p class="sub">«${esc(b.text)}»</p><p class="answer">${esc(b.result.text)}</p></section>`
     : `<label class="card vres pick ${b.on ? '' : 'off'}"><input type="checkbox" data-bi="${i}" ${b.on ? 'checked' : ''}>
         <span><p class="sub">«${esc(b.text)}»</p><h3>${esc(b.result.title)}</h3>${b.result.lines.map((l) => `<p>${esc(l)}</p>`).join('')}
         ${b.result.warn?.length ? `<div class="warn-box mt">${b.result.warn.map(esc).join('<br>')}</div>` : ''}</span></label>`)).join('')}
-    ${n ? `<button class="btn primary" data-act="batch-apply">Применить (${n})</button>` : fresh ? '<p class="note">Отметьте галочкой, что добавить.</p>' : '<p class="note">Новых уроков на картинке нет — всё уже в календаре.</p>'}`;
+    ${n ? `<button class="btn primary" data-act="batch-apply">Применить (${n})</button>` : '<p class="note">Отметьте галочкой, что добавить, или «Выбрать все».</p>'}`;
 }
 
 async function applyBatch() {
@@ -847,8 +852,13 @@ async function ocrText(files, onState) {
 function showFound(sh, text, pages) {
   sh.text = text;
   sh.result = null;
+  sh.pages = pages;
+  sh.pageDates = sh.pageDates || [];
   const ctx = voiceCtx();
-  const sched = pages.flatMap((lines) => findSchedule(lines, ctx, S.date).items);
+  const found = pages.map((lines, i) => findSchedule(lines, ctx, S.date, sh.pageDates[i]));
+  // Дату показываем, только если на картинке нашлись уроки, — её можно поправить.
+  sh.dates = found.map((f) => (f.items.length ? f.date : null));
+  const sched = found.flatMap((f) => f.items);
   const cmds = findCommands(text, ctx).items.filter((x) => x.result.kind === 'action');
   // Если на картинке расписание, ответы-вопросы из текста не нужны.
   sh.batch = [...sched, ...(sched.length ? cmds : findCommands(text, ctx).items)].map((x) => ({ ...x, on: x.on ?? x.result.kind === 'action' }));
@@ -1154,6 +1164,12 @@ const ACTIONS = {
   'voice-clear': () => { S.sheet.result = null; S.sheet.text = ''; renderSheet(); setTimeout(() => $('[data-vtext]')?.focus(), 30); },
   'voice-apply': () => applyVoice(),
   'batch-apply': () => applyBatch(),
+  'batch-all': () => {
+    const acts = S.sheet.batch.filter((b) => b.result.kind === 'action');
+    const on = !acts.every((b) => b.on);
+    acts.forEach((b) => { b.on = on; });
+    renderSheet();
+  },
   'media-open': (b) => openSheet({ type: 'media', id: b.dataset.id, full: true }, { push: true }),
   'media-ocr': () => ocrMedia(),
   'media-cmd': () => {
@@ -1226,6 +1242,11 @@ document.addEventListener('change', async (e) => {
   if (t.dataset.change === 'restore' && t.files[0]) { await restoreBackup(t.files[0]); t.value = ''; return; }
   if (t.dataset.change === 'ocr-voice' && t.files.length) { const files = [...t.files]; t.value = ''; ocrToVoice(files); return; }
   if (t.dataset.change === 'media-add' && t.files.length) { const files = [...t.files]; t.value = ''; await addMedia(files, t.dataset.student, t.dataset.lesson); return; }
+  if (t.dataset.change === 'sched-date' && S.sheet?.pages && t.value) {
+    S.sheet.pageDates[Number(t.dataset.page)] = t.value;
+    showFound(S.sheet, S.sheet.text, S.sheet.pages);
+    return;
+  }
   if (t.dataset.bi !== undefined && S.sheet?.batch) { S.sheet.batch[Number(t.dataset.bi)].on = t.checked; renderSheet(); return; }
   if (t.matches('[data-mtext]') && S.sheet?.type === 'media') {
     const m = S.media.find((x) => x.id === S.sheet.id);
