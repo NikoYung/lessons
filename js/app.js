@@ -10,6 +10,7 @@ import { interpret, findCommands, findSchedule, EXAMPLES, speechSupported, liste
 import { recognize } from './ocr.js';
 import * as media from './media.js';
 
+const APP_VERSION = 'v10';
 const ZOOMS = [28, 36, 46, 60, 76, 96, 124];
 const BACKUP_REMIND_DAYS = 30;
 const DEFAULT_SHEETS = [
@@ -479,6 +480,15 @@ function moreView() {
     </section>
     <section class="card">${sheetsManager()}</section>
     <section class="card">
+      <h2 class="section-title">Уроки</h2>
+      ${(() => {
+    const n = lessonsToWipe().length;
+    const name = allShown() ? '' : ` (${shownIds().map((id) => sheetById(id).name).join(', ')})`;
+    return `<p class="muted small">${n ? `В календаре ${lessonsWord(n)}${name}. Ученики, оплаты и файлы останутся.` : 'Уроков нет.'}</p>
+      ${n ? `<button class="btn danger mt" data-act="lessons-wipe">Удалить все уроки${esc(name)}</button>` : ''}`;
+  })()}
+    </section>
+    <section class="card">
       <h2 class="section-title">Резервная копия</h2>
       <p class="muted small">Все данные хранятся только на этом телефоне. Раз в месяц сохраняйте копию в «Файлы» или отправьте себе.</p>
       <div class="row-btns mt">
@@ -495,7 +505,8 @@ function moreView() {
     <section class="card">
       <h2 class="section-title">Как поставить на iPhone</h2>
       <p class="muted small">Откройте сайт в Safari → «Поделиться» → «На экран „Домой“». После первого запуска приложение работает без интернета.</p>
-    </section>`;
+    </section>
+    <p class="note center">Версия ${APP_VERSION} · <button class="link" data-act="hard-reload">Обновить приложение</button></p>`;
 }
 
 /** Листы: создать, переименовать, перекрасить, удалить. И в «Ещё», и по ⚙ в календаре. */
@@ -563,7 +574,6 @@ function animateView() {
 function go(iso) {
   if (!S.anim) S.anim = iso > S.date ? 'next' : iso < S.date ? 'prev' : null;
   S.date = iso;
-  S.scrollToNow = true;
 }
 
 /* ---------- Шторки ---------- */
@@ -1203,11 +1213,13 @@ const ACTIONS = {
   close: () => closeSheet(),
   overlay: (b, e) => { if (e.target === b) closeSheet(); },
   undo: () => undo(),
-  'cal-mode': (b) => { if (S.calMode !== b.dataset.mode) S.anim = 'fade'; S.calMode = b.dataset.mode; S.scrollToNow = true; saveView(); render(); },
+  'cal-mode': (b) => { if (S.calMode !== b.dataset.mode) S.anim = 'fade'; S.calMode = b.dataset.mode; saveView(); render(); },
   'open-day': (b) => { S.anim = 'fade'; S.calMode = 'day'; go(b.dataset.date); saveView(); render(); },
   shift: (b) => { go(addDays(S.date, Number(b.dataset.d) * calDays().length)); render(); },
   zoom: (b) => setZoom(ZOOMS[Math.max(0, Math.min(ZOOMS.length - 1, nearestZoom(S.zoom) + Number(b.dataset.d)))]),
   'sheets-open': () => openSheet({ type: 'sheets' }),
+  'lessons-wipe': () => wipeLessons(),
+  'hard-reload': () => globalThis.__hardReload?.(),
   'sheet-color': async (b) => {
     const x = sheetById(b.dataset.id);
     const used = sheets().filter((y) => y.id !== x.id).map((y) => y.color);
@@ -1248,7 +1260,7 @@ const ACTIONS = {
     saveView();
     await saveSheets(rest);
   },
-  goto: (b) => { go(b.dataset.date); if (S.calMode === 'month' && b.closest('.week')) S.calMode = 'day'; render(); },
+  goto: (b) => { if (b.classList.contains('pill')) S.scrollToNow = true; go(b.dataset.date); if (S.calMode === 'month' && b.closest('.week')) S.calMode = 'day'; render(); },
   pick: (b) => {
     if (S.date === b.dataset.date) { S.calMode = 'day'; go(b.dataset.date); } else S.date = b.dataset.date;
     render();
@@ -1390,6 +1402,25 @@ const ACTIONS = {
     else if (r.nav.student) openSheet({ type: 'student', id: r.nav.student, full: true });
   },
 };
+
+/** Уроки показанных листов (если включены все — вообще все). */
+const lessonsToWipe = () => S.lessons.filter((l) => visibleStudent(stById(l.studentId)));
+
+async function wipeLessons() {
+  const ls = lessonsToWipe();
+  if (!ls.length) return;
+  const name = allShown() ? '' : ` с листа «${shownIds().map((id) => sheetById(id).name).join('», «')}»`;
+  if (!confirm(`Удалить ${lessonsWord(ls.length)}${name}? Регулярные расписания тоже удалятся, ученики и оплаты останутся. Сразу после удаления можно нажать «Вернуть».`)) return;
+  const ids = new Set(ls.map((l) => l.id));
+  const studentIds = new Set(ls.map((l) => l.studentId));
+  const ops = [
+    ...ls.map((l) => ({ del: ['lessons', l.id] })),
+    // иначе регулярные уроки создадутся заново
+    ...S.series.filter((x) => studentIds.has(x.studentId) && visibleStudent(stById(x.studentId))).map((x) => ({ del: ['series', x.id] })),
+    ...S.media.filter((m) => ids.has(m.lessonId)).map((m) => ({ put: ['media', { ...m, lessonId: null }] })),
+  ];
+  await commit(ops, `Удалено: ${lessonsWord(ls.length)}`);
+}
 
 async function saveSheets(list) {
   S.settings = { ...S.settings, sheets: list };

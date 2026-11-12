@@ -27,6 +27,30 @@
   </nav>
   <div id="sheet-root"></div>
   <div id="toast" role="status"></div>
+  <script>
+    // Аварийный выход: показать ошибку и дать перезагрузить приложение начисто.
+    (function () {
+      function hardReload() {
+        var jobs = [];
+        if (window.caches) jobs.push(caches.keys().then(function (k) { return Promise.all(k.filter(function (n) { return n.indexOf('ocr') < 0; }).map(function (n) { return caches.delete(n); })); }));
+        if (navigator.serviceWorker) jobs.push(navigator.serviceWorker.getRegistrations().then(function (r) { return Promise.all(r.map(function (x) { return x.unregister(); })); }));
+        Promise.all(jobs).then(function () { location.reload(); }, function () { location.reload(); });
+      }
+      window.__hardReload = hardReload;
+      function show(msg) {
+        if (document.getElementById('crash')) return;
+        var d = document.createElement('div');
+        d.id = 'crash';
+        d.innerHTML = '<b>Что-то пошло не так</b><span></span><button type="button">Обновить приложение</button>';
+        d.querySelector('span').textContent = msg;
+        d.querySelector('button').onclick = hardReload;
+        document.body.appendChild(d);
+      }
+      window.addEventListener('error', function (e) { show(e.message || 'Ошибка загрузки'); });
+      window.addEventListener('unhandledrejection', function (e) { show(String(e.reason && e.reason.message || e.reason)); });
+      setTimeout(function () { if (!document.getElementById('view').children.length) show('Приложение не загрузилось'); }, 5000);
+    })();
+  </script>
   <script type="module" src="js/app.js"></script>
 </body>
 </html>

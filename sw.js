@@ -1,5 +1,5 @@
 // Офлайн: всё приложение кэшируется при установке. При правке файлов поднимай VERSION.
-const VERSION = 'v9';
+const VERSION = 'v10';
 const OCR_CACHE = 'lessons-ocr-7.0.0'; // модуль распознавания — отдельно, чтобы обновления не качали его заново
 const CACHE = `lessons-${VERSION}`;
 
@@ -10,7 +10,7 @@ const SHELL = [
 ];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (e) => {
@@ -34,7 +34,9 @@ async function cacheFirst(request) {
 async function networkFirst(request) {
   const cache = await caches.open(CACHE);
   try {
-    const res = await fetch(request);
+    // no-cache: GitHub Pages отдаёт файлы с max-age=600, и без этого телефон мог взять
+    // новый app.js со старым voice.js — приложение тогда не запускается.
+    const res = await fetch(request.url, { cache: 'no-cache', credentials: 'same-origin' });
     if (res.ok) await cache.put(request, res.clone());
     return res;
   } catch (err) {
