@@ -152,13 +152,14 @@ function calHeader() {
 /** Переключатель листов. Один лист — только его уроки; отметить ещё — листы совмещаются. */
 function sheetBar() {
   const list = sheets();
-  if (list.length < 2) return '';
+  if (list.length < 2) return `<div class="sheets"><button class="sh" data-act="sheets-open">+ Лист</button></div>`;
   const ids = shownIds();
   const all = allShown();
   return `
     <div class="sheets" role="group" aria-label="Листы">
       <button class="sh ${all ? 'on' : ''}" data-act="sheet-all">Все</button>
       ${list.map((x) => `<button class="sh ${!all && ids.includes(x.id) ? 'on' : ''}" style="--c:${x.color}" data-act="sheet-tap" data-id="${x.id}"><i></i>${esc(x.name)}</button>`).join('')}
+      <button class="sh" data-act="sheets-open" aria-label="Настроить листы">⚙</button>
     </div>
     ${!all && ids.length > 1 ? `<p class="sh-note">Совмещено: ${ids.map((id) => esc(sheetById(id).name)).join(' + ')}</p>` : ''}`;
 }
@@ -475,18 +476,7 @@ function moreView() {
         <label class="field">День до<select class="input" data-setting="dayEnd">${hourOptions(st.dayEnd, 13, 24)}</select></label>
       </div>
     </section>
-    <section class="card">
-      <h2 class="section-title">Листы календаря</h2>
-      <p class="muted small">У каждого ученика (класса) свой лист. Вверху календаря: нажмите лист — будут только его уроки, нажмите ещё один — листы совместятся, «Все» — всё расписание сразу.</p>
-      <div class="sheet-list">${sheets().map((x) => `
-        <div class="sheet-row">
-          <i class="dot" style="background:${x.color}"></i>
-          <input class="input" value="${esc(x.name)}" data-sheetname="${x.id}" aria-label="Название листа">
-          <span class="muted small">${S.students.filter((s) => sheetOf(s) === x.id).length}</span>
-          ${sheets().length > 1 ? `<button class="link danger-t" data-act="sheet-del" data-id="${x.id}" aria-label="Удалить лист">✕</button>` : ''}
-        </div>`).join('')}</div>
-      <button class="btn mt" data-act="sheet-add">+ Новый лист</button>
-    </section>
+    <section class="card">${sheetsManager()}</section>
     <section class="card">
       <h2 class="section-title">Резервная копия</h2>
       <p class="muted small">Все данные хранятся только на этом телефоне. Раз в месяц сохраняйте копию в «Файлы» или отправьте себе.</p>
@@ -505,6 +495,21 @@ function moreView() {
       <h2 class="section-title">Как поставить на iPhone</h2>
       <p class="muted small">Откройте сайт в Safari → «Поделиться» → «На экран „Домой“». После первого запуска приложение работает без интернета.</p>
     </section>`;
+}
+
+/** Листы: создать, переименовать, перекрасить, удалить. И в «Ещё», и по ⚙ в календаре. */
+function sheetsManager() {
+  return `
+      <h2 class="section-title">Листы календаря</h2>
+      <p class="muted small">У каждого ученика (класса) свой лист. Вверху календаря: нажмите лист — будут только его уроки, нажмите ещё один — листы совместятся, «Все» — всё расписание сразу. Лист ученика меняется в его карточке.</p>
+      <div class="sheet-list">${sheets().map((x) => `
+        <div class="sheet-row">
+          <button class="sw" style="background:${x.color}" data-act="sheet-color" data-id="${x.id}" aria-label="Сменить цвет"></button>
+          <input class="input" value="${esc(x.name)}" data-sheetname="${x.id}" aria-label="Название листа">
+          <span class="muted small">${S.students.filter((s) => sheetOf(s) === x.id).length} уч.</span>
+          ${sheets().length > 1 ? `<button class="link danger-t" data-act="sheet-del" data-id="${x.id}" aria-label="Удалить лист">✕</button>` : ''}
+        </div>`).join('')}</div>
+      <button class="btn mt" data-act="sheet-add">+ Новый лист</button>`;
 }
 
 function hourOptions(sel, from, to) {
@@ -557,7 +562,7 @@ function closeSheet() {
 function renderSheet() {
   const root = $('#sheet-root');
   if (!S.sheet) { root.innerHTML = ''; document.body.classList.remove('locked'); return; }
-  const fn = { lesson: lessonSheet, student: studentSheet, studentEdit: studentEditSheet, payment: paymentSheet, series: seriesSheet, voice: voiceSheet, media: mediaSheet }[S.sheet.type];
+  const fn = { sheets: (sh) => `${head('Листы')}${sheetsManager()}`, lesson: lessonSheet, student: studentSheet, studentEdit: studentEditSheet, payment: paymentSheet, series: seriesSheet, voice: voiceSheet, media: mediaSheet }[S.sheet.type];
   const prevScroll = $('.sheet', root)?.scrollTop || 0;
   const same = root.dataset.type === S.sheet.type;
   root.dataset.type = S.sheet.type;
@@ -1166,6 +1171,14 @@ const ACTIONS = {
   'open-day': (b) => { S.calMode = 'day'; go(b.dataset.date); saveView(); render(); },
   shift: (b) => { go(addDays(S.date, Number(b.dataset.d) * calDays().length)); render(); },
   zoom: (b) => setZoom(ZOOMS[Math.max(0, Math.min(ZOOMS.length - 1, nearestZoom(S.zoom) + Number(b.dataset.d)))]),
+  'sheets-open': () => openSheet({ type: 'sheets' }),
+  'sheet-color': async (b) => {
+    const x = sheetById(b.dataset.id);
+    const used = sheets().filter((y) => y.id !== x.id).map((y) => y.color);
+    const from = COLORS.indexOf(x.color);
+    const c = [...COLORS.slice(from + 1), ...COLORS.slice(0, from + 1)].find((k) => !used.includes(k)) || x.color;
+    await saveSheets(sheets().map((y) => (y.id === x.id ? { ...y, color: c } : y)));
+  },
   'sheet-all': () => { S.shown = null; saveView(); render(); },
   'sheet-tap': (b) => {
     const id = b.dataset.id;
@@ -1183,8 +1196,9 @@ const ACTIONS = {
     if (!name) return;
     const used = sheets().map((x) => x.color);
     const color = COLORS.find((c) => !used.includes(c)) || COLORS[sheets().length % COLORS.length];
-    await saveSheets([...sheets(), { id: uid(), name, color }]);
-    toast(`Лист «${name}» добавлен`);
+    const id = uid();
+    await saveSheets([...sheets(), { id, name, color }]);
+    toast(`Лист «${name}» добавлен. Учеников на него — в их карточке`);
   },
   'sheet-del': async (b) => {
     const x = sheetById(b.dataset.id);

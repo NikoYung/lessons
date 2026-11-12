@@ -345,3 +345,5 @@ details div { padding: 3px 0; }
 .sheet-row .input { flex: 1; }
 .danger-t { color: var(--red); }
 .cal-title { white-space: nowrap; }
+.sw { width: 26px; height: 26px; border-radius: 50%; flex: none; }
+.sheet-row .muted { white-space: nowrap; }
