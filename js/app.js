@@ -10,7 +10,7 @@ import { interpret, findCommands, findSchedule, EXAMPLES, speechSupported, liste
 import { recognize } from './ocr.js';
 import * as media from './media.js';
 
-const APP_VERSION = 'v10';
+const APP_VERSION = 'v11';
 const ZOOMS = [28, 36, 46, 60, 76, 96, 124];
 const BACKUP_REMIND_DAYS = 30;
 const DEFAULT_SHEETS = [
@@ -58,8 +58,13 @@ const allShown = () => shownIds().length === sheets().length;
 const visibleStudent = (stu) => shownIds().includes(sheetOf(stu));
 /** Лист для нового ученика: открытый сейчас, если открыт один. */
 const defaultSheet = () => (allShown() ? sheets()[0].id : shownIds()[0]);
+/** Лист урока: свой, если задан, иначе — лист ученика. */
+const lessonSheetId = (l) => (sheetById(l.sheet) ? l.sheet : sheetOf(stById(l.studentId)));
+const visibleLesson = (l) => shownIds().includes(lessonSheetId(l));
+/** Включён ровно один лист — новые уроки идут на него. */
+const activeSheet = () => (sheets().length > 1 && shownIds().length === 1 ? shownIds()[0] : null);
 /** Уроки дня в календаре — только с показанных листов. */
-const dayLessons = (iso) => S.lessons.filter((l) => l.date === iso && visibleStudent(stById(l.studentId))).sort(sortLessons);
+const dayLessons = (iso) => S.lessons.filter((l) => l.date === iso && visibleLesson(l)).sort(sortLessons);
 const TIMELINE = { day: 1, '3day': 3, week: 7 };
 const calDays = () => {
   const n = TIMELINE[S.calMode] || 1;
@@ -104,7 +109,13 @@ function applyLocal(ops) {
 
 /** Сохранить изменения; возвращает обратные операции для «Вернуть». */
 async function commit(ops, msg) {
-  for (const o of ops) if (o.put?.[0] === 'students' && !o.put[1].sheet) o.put[1] = { ...o.put[1], sheet: defaultSheet() };
+  const act = activeSheet();
+  for (const o of ops) {
+    if (!o.put || o.put[1].sheet) continue;
+    const [store, x] = o.put;
+    if (store === 'students') o.put[1] = { ...x, sheet: defaultSheet() };
+    else if (act && (store === 'lessons' || store === 'series') && !ARR[store]().some((y) => y.id === x.id)) o.put[1] = { ...x, sheet: act };
+  }
   const inverse = [];
   for (const o of [...ops].reverse()) {
     const [store, x] = o.put || o.del;
@@ -264,7 +275,7 @@ function timeline(days) {
       const st = statusOf(l, n);
       const hpx = (l.duration / 60) * S.zoom;
       const tag = st === 'done' ? '✓' : st === 'missed' ? 'пропуск' : st === 'cancelled' ? 'отменён' : '';
-      const sh = mixed ? sheetById(sheetOf(stu)) : null;
+      const sh = mixed ? sheetById(lessonSheetId(l)) : null;
       parts.push(`
       <button class="lb ${lessonBlockClass(st)} ${hpx < 40 ? 'tiny' : ''}" data-act="lesson-open" data-id="${l.id}"
         style="--c:${stu?.color || '#8e8e93'};top:calc(${(s - h0 * 60) / 60} * var(--hp));height:max(22px, calc(${l.duration / 60} * var(--hp) - 2px));left:${colL((di + col / cols) / N)};width:calc((100% - 60px) / ${N * cols} - 2px)">
@@ -640,6 +651,7 @@ function lessonSheet(sh) {
   return `
     ${head(sh.isNew ? 'Новый урок' : 'Урок')}
     <label class="field">Ученик<select class="input" data-field="studentId">${studentOptions(d.studentId)}</select></label>
+    ${sheets().length > 1 ? `<div class="field">Лист<div class="seg">${sheets().map((x) => `<button class="${(d.sheet || lessonSheetId(d)) === x.id ? 'on' : ''}" data-act="lesson-sheet" data-id="${x.id}">${esc(x.name)}</button>`).join('')}</div></div>` : ''}
     <div class="two">
       <label class="field">День<input class="input" type="date" value="${d.date}" data-field="date"></label>
       <label class="field">Начало<input class="input" type="time" value="${d.start}" step="300" data-field="start"></label>
@@ -669,15 +681,18 @@ function lessonSheet(sh) {
 
 function newLessonDraft(date, start, studentId = '') {
   const stu = stById(studentId);
-  return { id: uid(), studentId, date, start, duration: stu?.duration || S.settings.duration, status: 'planned', price: null, seriesId: null, note: '' };
+  const act = activeSheet();
+  // Включён один лист — урок на него; иначе — на лист ученика (меняется вместе с учеником, пока не выбран вручную).
+  return { id: uid(), studentId, date, start, duration: stu?.duration || S.settings.duration, status: 'planned', price: null, seriesId: null, note: '', sheet: act || (stu ? sheetOf(stu) : defaultSheet()), sheetAuto: !act };
 }
 
 async function saveLesson() {
   const sh = S.sheet;
   const d = { ...sh.draft };
+  delete d.sheetAuto;
   if (!d.studentId || !d.date || !d.start) return toast('Заполните ученика, день и время');
   if (sh.isNew && sh.repeat) {
-    const series = { id: uid(), studentId: d.studentId, days: [weekday(d.date)], start: d.start, duration: d.duration, from: d.date, until: null, generatedUntil: null };
+    const series = { id: uid(), studentId: d.studentId, sheet: d.sheet, days: [weekday(d.date)], start: d.start, duration: d.duration, from: d.date, until: null, generatedUntil: null };
     const ext = extendSeries(series, today() > d.date ? today() : d.date);
     const ops = [{ put: ['series', ext.series] }, ...ext.lessons.map((l) => ({ put: ['lessons', { ...l, price: d.price, note: l.date === d.date ? d.note : '' }] }))];
     closeSheet();
@@ -764,7 +779,7 @@ function studentEditSheet(sh) {
     ${head(sh.isNew ? 'Новый ученик' : 'Изменить ученика')}
     <label class="field">Имя<input class="input" value="${esc(d.name)}" data-field="name" placeholder="Маша" autocomplete="off"></label>
     <label class="field">Другие имена для голоса<input class="input" value="${esc(d.aliases)}" data-field="aliases" placeholder="Мария, Маруся, Иванова"></label>
-    ${sheets().length > 1 ? `<div class="field">Лист<div class="seg">${sheets().map((x) => `<button class="${d.sheet === x.id ? 'on' : ''}" data-act="draft-sheet" data-id="${x.id}">${esc(x.name)}</button>`).join('')}</div></div>` : ''}
+    ${sheets().length > 1 ? `<div class="field">Лист по умолчанию для его уроков<div class="seg">${sheets().map((x) => `<button class="${d.sheet === x.id ? 'on' : ''}" data-act="draft-sheet" data-id="${x.id}">${esc(x.name)}</button>`).join('')}</div></div>` : ''}
     <label class="toggle"><input type="checkbox" data-field="busy" ${d.kind === 'busy' ? 'checked' : ''}><span>Не урок — школа, встречи (в деньгах не считать)</span></label>
     <div class="two">
       <label class="field" ${d.kind === 'busy' ? 'hidden' : ''}>Цена урока, ₽<input class="input" inputmode="numeric" value="${d.price}" data-field="price"></label>
@@ -1240,6 +1255,7 @@ const ACTIONS = {
     saveView();
     render();
   },
+  'lesson-sheet': (b) => { S.sheet.draft.sheet = b.dataset.id; S.sheet.draft.sheetAuto = false; renderSheet(); },
   'draft-sheet': (b) => { S.sheet.draft.sheet = b.dataset.id; renderSheet(); },
   'sheet-add': async () => {
     const name = (prompt('Название листа', 'Новый лист') || '').trim();
@@ -1404,7 +1420,7 @@ const ACTIONS = {
 };
 
 /** Уроки показанных листов (если включены все — вообще все). */
-const lessonsToWipe = () => S.lessons.filter((l) => visibleStudent(stById(l.studentId)));
+const lessonsToWipe = () => S.lessons.filter(visibleLesson);
 
 async function wipeLessons() {
   const ls = lessonsToWipe();
@@ -1416,7 +1432,7 @@ async function wipeLessons() {
   const ops = [
     ...ls.map((l) => ({ del: ['lessons', l.id] })),
     // иначе регулярные уроки создадутся заново
-    ...S.series.filter((x) => studentIds.has(x.studentId) && visibleStudent(stById(x.studentId))).map((x) => ({ del: ['series', x.id] })),
+    ...S.series.filter((x) => studentIds.has(x.studentId) && visibleLesson(x)).map((x) => ({ del: ['series', x.id] })),
     ...S.media.filter((m) => ids.has(m.lessonId)).map((m) => ({ put: ['media', { ...m, lessonId: null }] })),
   ];
   await commit(ops, `Удалено: ${lessonsWord(ls.length)}`);
@@ -1510,7 +1526,10 @@ document.addEventListener('change', async (e) => {
   if (t.dataset.field === 'repeat') { S.sheet.repeat = t.checked; renderSheet(); return; }
   if (t.dataset.field === 'busy') { d.kind = t.checked ? 'busy' : 'student'; renderSheet(); return; }
   if (t.dataset.field === 'studentId' && t.value === '__new') { openStudentEdit(null, true); return; }
-  if (t.dataset.field === 'studentId' && S.sheet.type === 'lesson' && S.sheet.isNew) d.duration = stById(t.value)?.duration || d.duration;
+  if (t.dataset.field === 'studentId' && S.sheet.type === 'lesson' && S.sheet.isNew) {
+    d.duration = stById(t.value)?.duration || d.duration;
+    if (d.sheetAuto && stById(t.value)) d.sheet = sheetOf(stById(t.value));
+  }
   if (t.dataset.field === 'duration' && S.sheet.type === 'lesson') d.duration = Number(t.value);
   if (!(t.dataset.field === 'price' && S.sheet.type === 'lesson')) d[t.dataset.field] = t.value;
   // Перерисовываем только после выбора в пикерах — иначе при переходе между полями закрывается клавиатура.
